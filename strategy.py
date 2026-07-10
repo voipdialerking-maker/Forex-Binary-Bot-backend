@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import logging
-import backend.config as config
+import config as config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Strategy")

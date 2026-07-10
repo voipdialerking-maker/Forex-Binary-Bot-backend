@@ -4,12 +4,16 @@ from datetime import datetime, timezone
 import http.server
 import threading
 import os
-import backend.config as config
-import backend.database as database
-import backend.notifier as notifier
-from backend.data_feed import DerivDataFeed, fetch_1m_candles
-from backend.indicators import calculate_all_indicators
-from backend.strategy import check_strategy_signal, validate_1m_exhaustion
+import sys
+# Add current directory to path to support direct imports in all environments
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+import config
+import database
+import notifier
+from data_feed import DerivDataFeed, fetch_1m_candles
+from indicators import calculate_all_indicators
+from strategy import check_strategy_signal, validate_1m_exhaustion
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Main")

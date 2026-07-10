@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import websockets
-import backend.config as config
+import config as config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("DataFeed")

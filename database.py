@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
-import backend.config as config
+import config as config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Database")

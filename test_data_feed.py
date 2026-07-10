@@ -2,10 +2,10 @@ import asyncio
 import json
 import logging
 import websockets
-import backend.config as config
-from backend.indicators import calculate_all_indicators
-from backend.strategy import validate_1m_exhaustion
-from backend.data_feed import fetch_1m_candles
+import config as config
+from indicators import calculate_all_indicators
+from strategy import validate_1m_exhaustion
+from data_feed import fetch_1m_candles
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("TestRunner")
