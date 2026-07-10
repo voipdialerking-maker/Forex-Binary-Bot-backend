@@ -1,0 +1,198 @@
+import asyncio
+import logging
+from datetime import datetime, timezone
+import http.server
+import threading
+import os
+import backend.config as config
+import backend.database as database
+import backend.notifier as notifier
+from backend.data_feed import DerivDataFeed, fetch_1m_candles
+from backend.indicators import calculate_all_indicators
+from backend.strategy import check_strategy_signal, validate_1m_exhaustion
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("Main")
+
+# Track active signals in memory to check outcomes
+# Format: { pair: [ { id: str, type: str, entry_price: float, expiry_epoch: int } ] }
+active_signals_tracker = {pair: [] for pair in config.MONITORED_PAIRS}
+
+def format_pair_display(pair: str) -> str:
+    """Converts frxEURUSD -> EUR/USD"""
+    if pair.startswith("frx") and len(pair) == 9:
+        return f"{pair[3:6]}/{pair[6:]}"
+    return pair
+
+async def handle_candle_completed(pair: str, candle_history: list):
+    """
+    Callback triggered when a 5-minute candle closes.
+    """
+    try:
+        # 1. Convert to DataFrame and calculate indicators
+        df = calculate_all_indicators(candle_history)
+        
+        # 2. Check for active signals that need outcome evaluation
+        # The completed candle is df.iloc[-2] (the one that just finished)
+        completed_candle = df.iloc[-2]
+        completed_epoch = int(completed_candle['epoch'])
+        completed_close = float(completed_candle['close'])
+        
+        await evaluate_pending_outcomes(pair, completed_epoch, completed_close)
+
+        # 3. Check active trade lock
+        if len(active_signals_tracker[pair]) > 0:
+            logger.info(f"Signal evaluation skipped for {format_pair_display(pair)}: An active trade is already running.")
+            return
+
+        # 4. Check for potential new strategy signals
+        result = check_strategy_signal(df)
+        if result and result["signal"]:
+            direction = result["signal"]
+            entry_price = result["entry_price"]
+            rsi = result["rsi"]
+            stochastic = result["stochastic"]
+            volume_ratio = result["volume_ratio"]
+            
+            pair_display = format_pair_display(pair)
+            logger.info(f"🚨 POTENTIAL SETUP: {pair_display} -> {direction} @ {entry_price}. Validating 1m candles...")
+
+            # 5. Fetch 1-minute candles for Concept 2 validation
+            candles_1m = await fetch_1m_candles(pair)
+            if not validate_1m_exhaustion(candles_1m, direction):
+                logger.info(f"❌ Setup discarded for {pair_display}: 1m exhaustion validation failed.")
+                return
+
+            logger.info(f"✅ Setup validated! Sending signal for {pair_display} -> {direction}...")
+
+            # Send signal notification to Telegram
+            notifier.send_telegram_signal(
+                pair_display=pair_display,
+                direction=direction,
+                entry_price=entry_price,
+                rsi=rsi,
+                stochastic=stochastic,
+                volume=volume_ratio
+            )
+
+            # Insert signal into Supabase DB
+            signal_id = database.insert_signal(
+                pair=pair,
+                direction=direction,
+                entry_price=entry_price,
+                rsi=rsi,
+                stochastic=stochastic,
+                volume=volume_ratio
+            )
+
+            if signal_id:
+                # Add to active signals tracker to evaluate outcome after 5 minutes (next candle close)
+                # Expiry epoch is current candle epoch + 300 seconds (5 mins)
+                expiry_epoch = int(result["epoch"]) + 300
+                active_signals_tracker[pair].append({
+                    "id": signal_id,
+                    "type": direction,
+                    "entry_price": entry_price,
+                    "expiry_epoch": expiry_epoch
+                })
+                logger.info(f"Signal added to tracker. Awaiting expiry at epoch: {expiry_epoch}")
+                
+    except Exception as e:
+        logger.error(f"Error handling candle completion for {pair}: {e}", exc_info=True)
+
+async def evaluate_pending_outcomes(pair: str, completed_epoch: int, completed_close: float):
+    """
+    Evaluates tracked signals that have expired.
+    """
+    pair_display = format_pair_display(pair)
+    pending = active_signals_tracker[pair]
+    remaining = []
+
+    for signal in pending:
+        # Check if the completed candle epoch matches or has passed the expiry epoch
+        if completed_epoch >= signal["expiry_epoch"]:
+            entry = signal["entry_price"]
+            direction = signal["type"]
+            
+            # Determine outcome
+            outcome = "TIE"
+            if direction == "CALL":
+                if completed_close > entry:
+                    outcome = "WON"
+                elif completed_close < entry:
+                    outcome = "LOST"
+            elif direction == "PUT":
+                if completed_close < entry:
+                    outcome = "WON"
+                elif completed_close > entry:
+                    outcome = "LOST"
+
+            logger.info(f"🔔 Signal {signal['id']} ({pair_display} {direction}) expired. Entry: {entry}, Expiry: {completed_close}. Outcome: {outcome}")
+            
+            # Update Database
+            database.update_signal_outcome(
+                signal_id=signal["id"],
+                expiry_price=completed_close,
+                outcome=outcome
+            )
+
+            # Send Telegram Outcome Update
+            notifier.send_telegram_outcome(
+                pair_display=pair_display,
+                direction=direction,
+                entry_price=entry,
+                expiry_price=completed_close,
+                outcome=outcome
+            )
+        else:
+            remaining.append(signal)
+
+    active_signals_tracker[pair] = remaining
+
+async def database_cleanup_scheduler():
+    """
+    Runs every 24 hours to delete signals older than 7 days.
+    """
+    while True:
+        logger.info("Running scheduled database cleanup...")
+        database.delete_old_signals()
+        # Sleep for 24 hours
+        await asyncio.sleep(24 * 3600)
+
+class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"status": "ok", "message": "Quantum Bot Backend is running"}')
+    def log_message(self, format, *args):
+        # Suppress request logs to keep terminal output clean
+        return
+
+def start_health_check_server():
+    port = int(os.getenv("PORT", 8080))
+    server = http.server.HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    logger.info(f"Started Health Check Server on port {port}")
+    server.serve_forever()
+
+async def main():
+    logger.info("Starting Binary Options Signal Generator Backend...")
+    
+    # 1. Start HTTP Health Check Server in a background thread for Render Port Binding
+    threading.Thread(target=start_health_check_server, daemon=True).start()
+    
+    # 2. Run database cleanup once on startup
+    database.delete_old_signals()
+
+    # 3. Start the database cleanup scheduler in the background
+    asyncio.create_task(database_cleanup_scheduler())
+
+    # 4. Initialize and run the Deriv Data Feed
+    feed = DerivDataFeed(callback=handle_candle_completed)
+    await feed.run()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Backend stopped manually.")
