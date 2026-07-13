@@ -65,9 +65,18 @@ class DerivDataFeed:
                     logger.info(f"Received historical candles for {pair} ({len(data['candles'])} candles)")
                     self.candles_history[pair] = data["candles"]
                 
-                # Case 2: Real-time active candle update
-                elif "candle" in data:
-                    candle = data["candle"]
+                # Case 2: Real-time active candle update (Deriv pushes OHLC subscription updates)
+                elif "ohlc" in data:
+                    ohlc = data["ohlc"]
+                    # Format string values to floats/ints to match the historical candles structure
+                    candle = {
+                        "open": float(ohlc["open"]),
+                        "high": float(ohlc["high"]),
+                        "low": float(ohlc["low"]),
+                        "close": float(ohlc["close"]),
+                        "epoch": int(ohlc["epoch"]),
+                        "volume": float(ohlc.get("volume", 1.0))
+                    }
                     history = self.candles_history[pair]
                     
                     if not history:
