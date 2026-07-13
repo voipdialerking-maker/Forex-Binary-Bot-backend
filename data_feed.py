@@ -69,12 +69,13 @@ class DerivDataFeed:
                 elif "ohlc" in data:
                     ohlc = data["ohlc"]
                     # Format string values to floats/ints to match the historical candles structure
+                    # We use 'open_time' as the epoch because 'epoch' in real-time push represents the tick time, not the candle start time.
                     candle = {
                         "open": float(ohlc["open"]),
                         "high": float(ohlc["high"]),
                         "low": float(ohlc["low"]),
                         "close": float(ohlc["close"]),
-                        "epoch": int(ohlc["epoch"]),
+                        "epoch": int(ohlc["open_time"]),
                         "volume": float(ohlc.get("volume", 1.0))
                     }
                     history = self.candles_history[pair]
