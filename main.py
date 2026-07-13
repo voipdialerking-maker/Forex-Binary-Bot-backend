@@ -22,6 +22,9 @@ logger = logging.getLogger("Main")
 # Format: { pair: [ { id: str, type: str, entry_price: float, expiry_epoch: int } ] }
 active_signals_tracker = {pair: [] for pair in config.MONITORED_PAIRS}
 
+# Track the last evaluated 5m candle epoch per pair to prevent duplicate executions from race conditions
+last_processed_epoch = {pair: 0 for pair in config.MONITORED_PAIRS}
+
 def format_pair_display(pair: str) -> str:
     """Converts frxEURUSD -> EUR/USD"""
     if pair.startswith("frx") and len(pair) == 9:
@@ -36,12 +39,17 @@ async def handle_candle_completed(pair: str, candle_history: list):
         # 1. Convert to DataFrame and calculate indicators
         df = calculate_all_indicators(candle_history)
         
-        # 2. Check for active signals that need outcome evaluation
-        # The completed candle is df.iloc[-2] (the one that just finished)
+        # Get details of the candle that just completed (index -2)
         completed_candle = df.iloc[-2]
         completed_epoch = int(completed_candle['epoch'])
         completed_close = float(completed_candle['close'])
         
+        # Prevent race conditions or duplicate execution for the same completed candle close
+        if completed_epoch <= last_processed_epoch[pair]:
+            return
+        last_processed_epoch[pair] = completed_epoch
+        
+        # 2. Check for active signals that need outcome evaluation
         await evaluate_pending_outcomes(pair, completed_epoch, completed_close)
 
         # 3. Check active trade lock
@@ -173,6 +181,34 @@ class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
         # Suppress request logs to keep terminal output clean
         return
 
+def populate_active_tracker_from_db():
+    """
+    Populates active_signals_tracker from Supabase on startup to handle server restarts.
+    """
+    if not database.supabase_client:
+        logger.warning("Supabase client not active. Skipping active tracker population.")
+        return
+
+    try:
+        response = database.supabase_client.table("signals").select("*").eq("status", "ACTIVE").execute()
+        active_signals = response.data or []
+        
+        for sig in active_signals:
+            pair = sig["pair"]
+            if pair in active_signals_tracker:
+                expiry_dt = datetime.fromisoformat(sig["expiry_time"].replace("Z", "+00:00"))
+                expiry_epoch = int(expiry_dt.timestamp())
+                
+                active_signals_tracker[pair].append({
+                    "id": sig["id"],
+                    "type": sig["type"],
+                    "entry_price": float(sig["entry_price"]),
+                    "expiry_epoch": expiry_epoch
+                })
+        logger.info(f"Loaded {len(active_signals)} active signals from Supabase database on startup.")
+    except Exception as e:
+        logger.error(f"Error populating active tracker from Supabase: {e}")
+
 def start_health_check_server():
     port = int(os.getenv("PORT", 8080))
     server = http.server.HTTPServer(("0.0.0.0", port), HealthCheckHandler)
@@ -184,6 +220,9 @@ async def main():
     
     # 1. Start HTTP Health Check Server in a background thread for Render Port Binding
     threading.Thread(target=start_health_check_server, daemon=True).start()
+    
+    # 1.5. Populate active tracker from DB to handle server restarts
+    populate_active_tracker_from_db()
     
     # 2. Run database cleanup once on startup
     database.delete_old_signals()
