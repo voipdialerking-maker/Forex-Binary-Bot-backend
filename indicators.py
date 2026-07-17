@@ -46,6 +46,26 @@ def calculate_stochastic(df: pd.DataFrame, k_period: int = 14, d_period: int = 3
     df['stoch_d'] = df['stoch_k'].rolling(window=d_period).mean()
     return df
 
+def calculate_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
+    """
+    Calculates MACD Line, Signal Line, and MACD Histogram.
+    """
+    df = df.copy()
+    ema_fast = df['close'].ewm(span=fast, adjust=False).mean()
+    ema_slow = df['close'].ewm(span=slow, adjust=False).mean()
+    df['macd_line'] = ema_fast - ema_slow
+    df['macd_signal'] = df['macd_line'].ewm(span=signal, adjust=False).mean()
+    df['macd_hist'] = df['macd_line'] - df['macd_signal']
+    return df
+
+def calculate_ema(df: pd.DataFrame, period: int = 50) -> pd.DataFrame:
+    """
+    Calculates Exponential Moving Average for a given period.
+    """
+    df = df.copy()
+    df[f'ema_{period}'] = df['close'].ewm(span=period, adjust=False).mean()
+    return df
+
 def calculate_volume_metrics(df: pd.DataFrame, period: int = 20) -> pd.DataFrame:
     """
     Calculates volume moving average and volume multiplier.
@@ -79,9 +99,11 @@ def calculate_all_indicators(candles: list) -> pd.DataFrame:
         df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(1.0)
     
     # Calculate indicators
-    df = calculate_bollinger_bands(df)
-    df = calculate_rsi(df)
-    df = calculate_stochastic(df)
-    df = calculate_volume_metrics(df)
+    import config
+    df = calculate_bollinger_bands(df, config.BOLLINGER_PERIOD, config.BOLLINGER_DEV)
+    df = calculate_rsi(df, config.RSI_PERIOD)
+    df = calculate_stochastic(df, config.STOCH_K_PERIOD, config.STOCH_D_PERIOD)
+    df = calculate_macd(df, config.MACD_FAST, config.MACD_SLOW, config.MACD_SIGNAL)
+    df = calculate_volume_metrics(df, config.VOLUME_MA_PERIOD)
     
     return df

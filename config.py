@@ -39,5 +39,22 @@ STOCH_OVERSOLD = 20
 VOLUME_MA_PERIOD = 20
 VOLUME_CLIMAX_MULTIPLIER = 1.5 # 1.5x of moving average volume
 
+# New Advanced Indicators Config
+MACD_FAST = 12
+MACD_SLOW = 26
+MACD_SIGNAL = 9
+EMA_TREND_FAST = 50
+EMA_TREND_SLOW = 200
+DIVERGENCE_LOOKBACK = 10 # 5m candles to look back for RSI divergence
+
 # Strategy general config
 TIMEFRAME = "5m"  # 5 minutes
+
+# Session Config (UTC hours)
+# Pakistan Time (PKT) is UTC+5. 
+# London Open: 12:00 PM PKT = 07:00 UTC. Closes at 3:00 PM PKT = 10:00 UTC.
+# NY Open: 5:00 PM PKT = 12:00 UTC. Closes at 8:00 PM PKT = 15:00 UTC.
+SESSION_LONDON_START_UTC = 7
+SESSION_LONDON_END_UTC = 10
+SESSION_NY_START_UTC = 12
+SESSION_NY_END_UTC = 15

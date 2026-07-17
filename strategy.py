@@ -2,19 +2,65 @@ import pandas as pd
 import numpy as np
 import logging
 import config as config
+from datetime import datetime, timezone
+from indicators import calculate_ema
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Strategy")
 
+def is_valid_trading_session(epoch: int) -> bool:
+    """
+    Checks if the given epoch falls within the London or NY trading sessions.
+    """
+    dt_utc = datetime.fromtimestamp(epoch, tz=timezone.utc)
+    hour = dt_utc.hour
+    
+    is_london = config.SESSION_LONDON_START_UTC <= hour < config.SESSION_LONDON_END_UTC
+    is_ny = config.SESSION_NY_START_UTC <= hour < config.SESSION_NY_END_UTC
+    
+    if not (is_london or is_ny):
+        return False
+    return True
+
+def check_rsi_divergence(df: pd.DataFrame, direction: str, lookback: int = config.DIVERGENCE_LOOKBACK) -> bool:
+    """
+    Checks for Regular Bullish or Bearish RSI Divergence.
+    """
+    if len(df) < lookback + 2:
+        return True # Not enough data to check, allow trade
+        
+    recent_df = df.iloc[-(lookback+2):-2]
+    current_candle = df.iloc[-2]
+    
+    if direction == "CALL":
+        min_close_idx = recent_df['close'].idxmin()
+        prev_low_close = recent_df.loc[min_close_idx, 'close']
+        prev_rsi = recent_df.loc[min_close_idx, 'rsi']
+        
+        # Price is lower or equal, but RSI is higher (momentum is building up)
+        if current_candle['close'] <= prev_low_close and current_candle['rsi'] > prev_rsi:
+            return True
+            
+    elif direction == "PUT":
+        max_close_idx = recent_df['close'].idxmax()
+        prev_high_close = recent_df.loc[max_close_idx, 'close']
+        prev_rsi = recent_df.loc[max_close_idx, 'rsi']
+        
+        # Price is higher or equal, but RSI is lower (momentum is falling)
+        if current_candle['close'] >= prev_high_close and current_candle['rsi'] < prev_rsi:
+            return True
+            
+    return False
+
 def check_strategy_signal(df: pd.DataFrame) -> dict:
     """
-    Checks the last completed 5m candle (index -2) for CALL/PUT signals.
-    Returns a dictionary with potential signal details, or None if no setup.
+    Checks the last completed 5m candle (index -2) for CALL/PUT signals using BB, RSI, Stoch, MACD, and Divergence.
     """
     if len(df) < 30:
         return None
 
     completed_candle = df.iloc[-2]
+    prev_candle = df.iloc[-3]
     
     close = completed_candle['close']
     bb_upper = completed_candle['bb_upper']
@@ -23,20 +69,31 @@ def check_strategy_signal(df: pd.DataFrame) -> dict:
     stoch_k = completed_candle['stoch_k']
     volume_ratio = completed_candle['volume_ratio']
     volume = completed_candle['volume']
+    macd_hist = completed_candle['macd_hist']
+    prev_macd_hist = prev_candle['macd_hist']
 
     signal = None
     
-    # Determine if volume data is active (if it's fallback 1.0, standard deviation will be 0)
+    # Session Filter
+    if not is_valid_trading_session(completed_candle['epoch']):
+        return None
+    
     has_volume = (df['volume'].std() > 0) if len(df) > 0 else False
     volume_condition = (volume_ratio >= config.VOLUME_CLIMAX_MULTIPLIER) if has_volume else True
     
+    # MACD Momentum check
+    macd_bullish = (macd_hist > prev_macd_hist) or (macd_hist > 0)
+    macd_bearish = (macd_hist < prev_macd_hist) or (macd_hist < 0)
+    
     # Check potential CALL Condition
-    if (close < bb_lower) and (stoch_k < config.STOCH_OVERSOLD) and (rsi < config.RSI_OVERSOLD) and volume_condition:
-        signal = "CALL"
+    if (close < bb_lower) and (stoch_k < config.STOCH_OVERSOLD) and (rsi < config.RSI_OVERSOLD):
+        if volume_condition and macd_bullish and check_rsi_divergence(df, "CALL"):
+            signal = "CALL"
 
     # Check potential PUT Condition
-    elif (close > bb_upper) and (stoch_k > config.STOCH_OVERBOUGHT) and (rsi > config.RSI_OVERBOUGHT) and volume_condition:
-        signal = "PUT"
+    elif (close > bb_upper) and (stoch_k > config.STOCH_OVERBOUGHT) and (rsi > config.RSI_OVERBOUGHT):
+        if volume_condition and macd_bearish and check_rsi_divergence(df, "PUT"):
+            signal = "PUT"
 
     if signal:
         return {
@@ -50,111 +107,89 @@ def check_strategy_signal(df: pd.DataFrame) -> dict:
         }
     return None
 
+def check_h1_trend(candles_h1: list, direction: str) -> bool:
+    """
+    Validates the H1 Trend using EMA 50 and EMA 200.
+    """
+    if len(candles_h1) < 200:
+        logger.warning("Not enough H1 candles to calculate EMA 200.")
+        return True # Allow if not enough data
+        
+    df = pd.DataFrame(candles_h1)
+    df['close'] = pd.to_numeric(df['close'])
+    
+    df = calculate_ema(df, config.EMA_TREND_FAST)
+    df = calculate_ema(df, config.EMA_TREND_SLOW)
+    
+    last_ema_50 = df[f'ema_{config.EMA_TREND_FAST}'].iloc[-1]
+    last_ema_200 = df[f'ema_{config.EMA_TREND_SLOW}'].iloc[-1]
+    
+    if direction == "CALL":
+        # Uptrend: EMA 50 > EMA 200
+        is_uptrend = last_ema_50 > last_ema_200
+        if not is_uptrend:
+            logger.info("H1 Trend Validation REJECTED: Not in an uptrend (EMA 50 < EMA 200).")
+        return is_uptrend
+        
+    elif direction == "PUT":
+        # Downtrend: EMA 50 < EMA 200
+        is_downtrend = last_ema_50 < last_ema_200
+        if not is_downtrend:
+            logger.info("H1 Trend Validation REJECTED: Not in a downtrend (EMA 50 > EMA 200).")
+        return is_downtrend
+        
+    return False
+
 def validate_1m_exhaustion(candles_1m: list, direction: str) -> bool:
     """
-    Validates a potential 5m signal using 1m candle price action and wicks (Concept 2).
-    candles_1m: A list of 5 dictionaries containing 1m candles: [{'open', 'high', 'low', 'close', 'volume'}, ...]
-    direction: 'CALL' or 'PUT'
-    
-    Returns True if exhaustion and wick checks pass, False otherwise.
+    Validates a potential 5m signal using 1m candlestick patterns and wicks.
     """
     if len(candles_1m) < 5:
         logger.warning(f"Validation failed: Received only {len(candles_1m)} 1m candles (need 5).")
         return False
 
-    # Extract candle parameters (most recent candle is index -1)
-    bodies = []
-    volumes = []
-    
-    for c in candles_1m:
-        o = float(c['open'])
-        h = float(c['high'])
-        l = float(c['low'])
-        cl = float(c['close'])
-        vol = float(c.get('volume', 1.0))
-        
-        bodies.append(abs(cl - o))
-        volumes.append(vol)
-
-    # 1m Candle index mappings:
-    # 0, 1, 2 = first three candles of the 5m interval
-    # 3 = fourth candle
-    # 4 = fifth (most recent) candle
-    
-    body_5 = bodies[4]
-    vol_5 = volumes[4]
-
-    # Calculate average body size of first 3 candles to verify momentum decay
-    body_avg_123 = sum(bodies[0:3]) / 3.0
-    
-    # ----------------------------------------------------
-    # Check A: Size Decay (Momentum Exhaustion)
-    # The 5th candle body should be smaller than average body size of first 3
-    # ----------------------------------------------------
-    if body_avg_123 > 0:
-        size_decay_passed = body_5 <= (body_avg_123 * 0.85) # 15%+ reduction in size
-    else:
-        size_decay_passed = True
-        
-    # **Breakout Safety Filter:**
-    # If the 5th candle is a massive breakout candle, reject the trade
-    avg_prev_bodies = sum(bodies[0:4]) / 4.0
-    is_breakout = body_5 > (avg_prev_bodies * 2.2) if avg_prev_bodies > 0 else False
-    
-    if is_breakout:
-        logger.info(f"1m Validation REJECTED: 5th 1m candle is a strong breakout push.")
-        return False
-        
-    if not size_decay_passed:
-        logger.info(f"1m Validation REJECTED: No size decay on 1m chart (Body 5: {body_5:.6f}, Avg 1-3: {body_avg_123:.6f}).")
-        return False
-
-    # ----------------------------------------------------
-    # Check B: Volume Decay (Energy Exhaustion)
-    # ----------------------------------------------------
-    # Check if we have active volume variations
-    vol_std = np.std(volumes)
-    if vol_std > 0.01:
-        vol_avg_123 = sum(volumes[0:3]) / 3.0
-        vol_decay_passed = vol_5 < vol_avg_123
-        if not vol_decay_passed:
-            logger.info(f"1m Validation REJECTED: No volume decay on 1m chart (Vol 5: {vol_5}, Avg 1-3: {vol_avg_123:.2f}).")
-            return False
-    else:
-        # Volume not active / uniform fallback, skip
-        pass
-
-    # ----------------------------------------------------
-    # Check C: Rejection Wick (Pinbar shadow)
-    # ----------------------------------------------------
     last_candle = candles_1m[-1]
-    o_5 = float(last_candle['open'])
-    h_5 = float(last_candle['high'])
-    l_5 = float(last_candle['low'])
-    cl_5 = float(last_candle['close'])
+    prev_candle = candles_1m[-2]
+    
+    o_5, cl_5 = float(last_candle['open']), float(last_candle['close'])
+    h_5, l_5 = float(last_candle['high']), float(last_candle['low'])
+    
+    o_4, cl_4 = float(prev_candle['open']), float(prev_candle['close'])
+    
     candle_range = h_5 - l_5
+    body_5 = abs(cl_5 - o_5)
     
     if candle_range <= 0:
-        logger.warning("1m Validation: Candle range is zero. Rejecting.")
         return False
+        
+    # Candlestick Pattern Recognition
+    is_doji = body_5 <= (candle_range * 0.1)
+    
+    is_bullish_engulfing = (cl_4 < o_4) and (cl_5 > o_5) and (cl_5 > o_4) and (o_5 < cl_4)
+    is_bearish_engulfing = (cl_4 > o_4) and (cl_5 < o_5) and (cl_5 < o_4) and (o_5 > cl_4)
+    
+    lower_shadow = min(o_5, cl_5) - l_5
+    upper_shadow = h_5 - max(o_5, cl_5)
+    
+    is_hammer = (lower_shadow >= 2 * body_5) and (upper_shadow <= 0.2 * candle_range)
+    is_shooting_star = (upper_shadow >= 2 * body_5) and (lower_shadow <= 0.2 * candle_range)
 
     if direction == "CALL":
-        # We need a bottom wick showing rejection of lower prices
-        lower_shadow = min(o_5, cl_5) - l_5
-        wick_ratio = lower_shadow / candle_range
-        wick_passed = wick_ratio >= 0.25  # Lower shadow must be at least 25% of candle range
-        if not wick_passed:
-            logger.info(f"1m Validation REJECTED: Lower shadow ratio ({wick_ratio:.2f}) < 0.25 (need bottom rejection wick).")
+        # Require a strong reversal pattern
+        if is_bullish_engulfing or is_hammer or is_doji or (lower_shadow / candle_range >= 0.3):
+            logger.info("1m Validation APPROVED! Bullish pattern/rejection found.")
+            return True
+        else:
+            logger.info("1m Validation REJECTED: No bullish pattern or rejection wick found.")
             return False
             
     elif direction == "PUT":
-        # We need a top wick showing rejection of higher prices
-        upper_shadow = h_5 - max(o_5, cl_5)
-        wick_ratio = upper_shadow / candle_range
-        wick_passed = wick_ratio >= 0.25  # Upper shadow must be at least 25% of candle range
-        if not wick_passed:
-            logger.info(f"1m Validation REJECTED: Upper shadow ratio ({wick_ratio:.2f}) < 0.25 (need top rejection wick).")
+        # Require a strong reversal pattern
+        if is_bearish_engulfing or is_shooting_star or is_doji or (upper_shadow / candle_range >= 0.3):
+            logger.info("1m Validation APPROVED! Bearish pattern/rejection found.")
+            return True
+        else:
+            logger.info("1m Validation REJECTED: No bearish pattern or rejection wick found.")
             return False
 
-    logger.info(f"1m Validation APPROVED! Wick Ratio: {wick_ratio:.2f}, Size Decay Passed.")
-    return True
+    return False

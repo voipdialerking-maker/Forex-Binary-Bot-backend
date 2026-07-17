@@ -148,3 +148,33 @@ async def fetch_1m_candles(pair: str) -> list:
     except Exception as e:
         logger.error(f"Failed to fetch 1m candles: {e}")
         return []
+
+async def fetch_h1_candles(pair: str, count: int = 250) -> list:
+    """
+    Performs a one-shot WebSocket request to fetch historical 1-hour candles.
+    Used for H1 Trend Filter (EMA 50 vs EMA 200).
+    """
+    logger.info(f"Fetching {count} H1 candles for {pair}...")
+    try:
+        async with websockets.connect(config.DERIV_WS_URL) as ws:
+            request = {
+                "ticks_history": pair,
+                "adjust_start_time": 1,
+                "count": count,
+                "end": "latest",
+                "start": 1,
+                "style": "candles",
+                "granularity": 3600  # 1 hour in seconds
+            }
+            await ws.send(json.dumps(request))
+            response = await ws.recv()
+            data = json.loads(response)
+            
+            if "error" in data:
+                logger.error(f"Error fetching H1 candles: {data['error']['message']}")
+                return []
+                
+            return data.get("candles", [])
+    except Exception as e:
+        logger.error(f"Failed to fetch H1 candles: {e}")
+        return []

@@ -4,8 +4,8 @@ import logging
 import websockets
 import config as config
 from indicators import calculate_all_indicators
-from strategy import validate_1m_exhaustion
-from data_feed import fetch_1m_candles
+from data_feed import fetch_1m_candles, fetch_h1_candles
+from strategy import validate_1m_exhaustion, check_h1_trend
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("TestRunner")
@@ -44,6 +44,7 @@ async def test_full_validation_oneshot():
             print(f"Close Price: {last_candle['close']:.5f}")
             print(f"RSI (14):      {last_candle['rsi']:.2f}")
             print(f"Stoch %K:     {last_candle['stoch_k']:.2f}")
+            print(f"MACD Hist:    {last_candle['macd_hist']:.6f}")
             print(f"BB Upper:     {last_candle['bb_upper']:.5f} | Lower: {last_candle['bb_lower']:.5f}")
             print("="*50 + "\n")
             
@@ -63,6 +64,17 @@ async def test_full_validation_oneshot():
             
             print("\nRunning Mock PUT validation:")
             put_passed = validate_1m_exhaustion(candles_1m, "PUT")
+            print("="*50 + "\n")
+            
+        # 3. Test H1 Trend Validation
+        candles_h1 = await fetch_h1_candles("frxEURUSD")
+        if candles_h1:
+            print("="*50)
+            print("H1 TREND VALIDATION (frxEURUSD)")
+            call_trend = check_h1_trend(candles_h1, "CALL")
+            put_trend = check_h1_trend(candles_h1, "PUT")
+            print(f"Trend for CALL: {'APPROVED' if call_trend else 'REJECTED'}")
+            print(f"Trend for PUT:  {'APPROVED' if put_trend else 'REJECTED'}")
             print("="*50 + "\n")
             
     except Exception as e:

@@ -11,9 +11,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import config
 import database
 import notifier
-from data_feed import DerivDataFeed, fetch_1m_candles
+from data_feed import DerivDataFeed, fetch_1m_candles, fetch_h1_candles
 from indicators import calculate_all_indicators
-from strategy import check_strategy_signal, validate_1m_exhaustion
+from strategy import check_strategy_signal, validate_1m_exhaustion, check_h1_trend
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Main")
@@ -67,7 +67,15 @@ async def handle_candle_completed(pair: str, candle_history: list):
             volume_ratio = result["volume_ratio"]
             
             pair_display = format_pair_display(pair)
-            logger.info(f"🚨 POTENTIAL SETUP: {pair_display} -> {direction} @ {entry_price}. Validating 1m candles...")
+            logger.info(f"🚨 POTENTIAL SETUP: {pair_display} -> {direction} @ {entry_price}. Validating H1 Trend...")
+            
+            # Fetch H1 candles for Trend Filter
+            candles_h1 = await fetch_h1_candles(pair)
+            if not check_h1_trend(candles_h1, direction):
+                logger.info(f"❌ Setup discarded for {pair_display}: H1 Trend validation failed.")
+                return
+
+            logger.info(f"✅ H1 Trend validated. Fetching 1m candles for exhaustion check...")
 
             # 5. Fetch 1-minute candles for Concept 2 validation
             candles_1m = await fetch_1m_candles(pair)
