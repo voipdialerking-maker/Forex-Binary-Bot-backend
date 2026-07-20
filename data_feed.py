@@ -47,7 +47,8 @@ class DerivDataFeed:
     async def receive_messages(self):
         while self.running:
             try:
-                message = await self.websocket.recv()
+                # Add a timeout so it doesn't hang forever if the connection silently drops
+                message = await asyncio.wait_for(self.websocket.recv(), timeout=60.0)
                 data = json.loads(message)
                 
                 # Check for errors
@@ -107,6 +108,9 @@ class DerivDataFeed:
                             # Run async callback
                             asyncio.create_task(self.callback(pair, history))
                             
+            except asyncio.TimeoutError:
+                logger.warning("Deriv WebSocket silent timeout (60s without data). Reconnecting...")
+                break
             except websockets.exceptions.ConnectionClosed:
                 logger.warning("Deriv WebSocket connection closed. Reconnecting...")
                 break
