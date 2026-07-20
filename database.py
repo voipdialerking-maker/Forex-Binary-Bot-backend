@@ -72,15 +72,15 @@ def update_signal_outcome(signal_id: str, expiry_price: float, outcome: str):
 
 def delete_old_signals():
     """
-    Deletes signals older than 7 days from the database.
+    Deletes signals older than 30 days (1 month) from the database.
     """
     if not supabase_client:
         return
 
-    one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    one_month_ago = datetime.now(timezone.utc) - timedelta(days=30)
     try:
-        response = supabase_client.table("signals").delete().lt("created_at", one_week_ago.isoformat()).execute()
+        response = supabase_client.table("signals").delete().lt("created_at", one_month_ago.isoformat()).execute()
         deleted_count = len(response.data) if response.data else 0
-        logger.info(f"Cleaned up {deleted_count} old signals (older than 1 week).")
+        logger.info(f"Cleaned up {deleted_count} old signals (older than 1 month).")
     except Exception as e:
         logger.error(f"Failed to run database cleanup: {e}")

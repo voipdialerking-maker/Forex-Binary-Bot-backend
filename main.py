@@ -171,7 +171,7 @@ async def evaluate_pending_outcomes(pair: str, completed_epoch: int, completed_c
 
 async def database_cleanup_scheduler():
     """
-    Runs every 24 hours to delete signals older than 7 days.
+    Runs every 24 hours to delete signals older than 30 days (1 month).
     """
     while True:
         logger.info("Running scheduled database cleanup...")
