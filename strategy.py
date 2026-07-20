@@ -10,17 +10,12 @@ logger = logging.getLogger("Strategy")
 
 def is_valid_trading_session(epoch: int) -> bool:
     """
-    Checks if the given epoch falls within the London or NY trading sessions.
+    Checks if the given epoch falls within the active trading session (e.g. 07:00 to 17:00 UTC).
     """
     dt_utc = datetime.fromtimestamp(epoch, tz=timezone.utc)
     hour = dt_utc.hour
     
-    is_london = config.SESSION_LONDON_START_UTC <= hour < config.SESSION_LONDON_END_UTC
-    is_ny = config.SESSION_NY_START_UTC <= hour < config.SESSION_NY_END_UTC
-    
-    if not (is_london or is_ny):
-        return False
-    return True
+    return config.SESSION_START_UTC <= hour < config.SESSION_END_UTC
 
 def check_rsi_divergence(df: pd.DataFrame, direction: str, lookback: int = config.DIVERGENCE_LOOKBACK) -> bool:
     """
