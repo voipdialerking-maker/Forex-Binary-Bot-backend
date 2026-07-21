@@ -5,7 +5,7 @@ import config as config
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Notifier")
 
-def send_telegram_signal(pair_display: str, direction: str, entry_price: float, rsi: float, stochastic: float, volume: float) -> bool:
+def send_telegram_signal(pair_display: str, direction: str, entry_price: float, rsi: float, stochastic: float, volume: float, strategy: str = "Trend Exhaustion") -> bool:
     """
     Sends a formatted signal notification to Telegram via the Telegram Bot API.
     """
@@ -23,6 +23,7 @@ def send_telegram_signal(pair_display: str, direction: str, entry_price: float, 
         f"{emoji}\n"
         f"<b>Pair:</b> {pair_display}\n"
         f"<b>Timeframe:</b> 5 Minutes\n"
+        f"<b>Strategy:</b> {strategy}\n"
         f"<b>Entry Price:</b> {entry_price:.5f}\n\n"
         f"<b>Indicators at Setup:</b>\n"
         f"• RSI (14): {rsi:.2f}\n"

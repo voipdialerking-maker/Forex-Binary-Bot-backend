@@ -17,7 +17,7 @@ if config.SUPABASE_URL and config.SUPABASE_KEY:
 else:
     logger.warning("Supabase URL or Key not set. Database operations will be bypassed.")
 
-def insert_signal(pair: str, direction: str, entry_price: float, rsi: float, stochastic: float, volume: float) -> str:
+def insert_signal(pair: str, direction: str, entry_price: float, rsi: float, stochastic: float, volume: float, strategy: str) -> str:
     """
     Inserts a new signal into the Supabase database.
     Returns the generated UUID (id) of the signal, or None on failure.
@@ -39,7 +39,8 @@ def insert_signal(pair: str, direction: str, entry_price: float, rsi: float, sto
         "stochastic_k": float(stochastic) if stochastic is not None else None,
         "volume_value": float(volume) if volume is not None else None,
         "created_at": now.isoformat(),
-        "expiry_time": expiry_time.isoformat()
+        "expiry_time": expiry_time.isoformat(),
+        "strategy": strategy
     }
 
     try:

@@ -66,6 +66,14 @@ def calculate_ema(df: pd.DataFrame, period: int = 50) -> pd.DataFrame:
     df[f'ema_{period}'] = df['close'].ewm(span=period, adjust=False).mean()
     return df
 
+def calculate_sma(df: pd.DataFrame, period: int = 9) -> pd.DataFrame:
+    """
+    Calculates Simple Moving Average for a given period.
+    """
+    df = df.copy()
+    df[f'sma_{period}'] = df['close'].rolling(window=period).mean()
+    return df
+
 def calculate_volume_metrics(df: pd.DataFrame, period: int = 20) -> pd.DataFrame:
     """
     Calculates volume moving average and volume multiplier.

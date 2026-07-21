@@ -124,17 +124,17 @@ class DerivDataFeed:
             logger.info("Retrying connection in 5 seconds...")
             await asyncio.sleep(5)
 
-async def fetch_1m_candles(pair: str) -> list:
+async def fetch_1m_candles(pair: str, count: int = 5) -> list:
     """
-    Performs a one-shot WebSocket request to fetch the last 5 1-minute candles.
+    Performs a one-shot WebSocket request to fetch historical 1-minute candles.
     """
-    logger.info(f"Fetching 1m candles for {pair}...")
+    logger.info(f"Fetching {count} 1m candles for {pair}...")
     try:
         async with websockets.connect(config.DERIV_WS_URL) as ws:
             request = {
                 "ticks_history": pair,
                 "adjust_start_time": 1,
-                "count": 5,
+                "count": count,
                 "end": "latest",
                 "start": 1,
                 "style": "candles",
@@ -153,12 +153,12 @@ async def fetch_1m_candles(pair: str) -> list:
         logger.error(f"Failed to fetch 1m candles: {e}")
         return []
 
-async def fetch_h1_candles(pair: str, count: int = 250) -> list:
+async def fetch_m15_candles(pair: str, count: int = 250) -> list:
     """
-    Performs a one-shot WebSocket request to fetch historical 1-hour candles.
-    Used for H1 Trend Filter (EMA 50 vs EMA 200).
+    Performs a one-shot WebSocket request to fetch historical 15-minute candles.
+    Used for M15 Trend Filter (EMA 50 vs EMA 200).
     """
-    logger.info(f"Fetching {count} H1 candles for {pair}...")
+    logger.info(f"Fetching {count} M15 candles for {pair}...")
     try:
         async with websockets.connect(config.DERIV_WS_URL) as ws:
             request = {
@@ -168,17 +168,17 @@ async def fetch_h1_candles(pair: str, count: int = 250) -> list:
                 "end": "latest",
                 "start": 1,
                 "style": "candles",
-                "granularity": 3600  # 1 hour in seconds
+                "granularity": 900  # 15 minutes in seconds
             }
             await ws.send(json.dumps(request))
             response = await ws.recv()
             data = json.loads(response)
             
             if "error" in data:
-                logger.error(f"Error fetching H1 candles: {data['error']['message']}")
+                logger.error(f"Error fetching M15 candles: {data['error']['message']}")
                 return []
                 
             return data.get("candles", [])
     except Exception as e:
-        logger.error(f"Failed to fetch H1 candles: {e}")
+        logger.error(f"Failed to fetch M15 candles: {e}")
         return []

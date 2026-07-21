@@ -11,9 +11,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import config
 import database
 import notifier
-from data_feed import DerivDataFeed, fetch_1m_candles, fetch_h1_candles
+from data_feed import DerivDataFeed, fetch_1m_candles, fetch_m15_candles
 from indicators import calculate_all_indicators
-from strategy import check_strategy_signal, validate_1m_exhaustion, check_h1_trend
+from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Main")
@@ -57,33 +57,53 @@ async def handle_candle_completed(pair: str, candle_history: list):
             logger.info(f"Signal evaluation skipped for {format_pair_display(pair)}: An active trade is already running.")
             return
 
-        # 4. Check for potential new strategy signals
-        result = check_strategy_signal(df)
-        if result and result["signal"]:
-            direction = result["signal"]
-            entry_price = result["entry_price"]
-            rsi = result["rsi"]
-            stochastic = result["stochastic"]
-            volume_ratio = result["volume_ratio"]
+        # 3. Check for Trend-Aligned Exhaustion Signal (Strategy 1)
+        signal_data = check_trend_exhaustion(df)
+        
+        # 4. Check for SMC Sweep Signal (Strategy 2) if Strategy 1 didn't trigger
+        if not signal_data:
+            candles_m15 = await fetch_m15_candles(pair, count=50) # Get M15 for SMC Sweep
+            candles_1m = await fetch_1m_candles(pair) # Get 1m for SMC Sweep rejection
+            signal_data = check_smc_sweep(candles_m15, candles_1m)
+            
+        # 5. Check for SMA-SMC Continuation (Strategy 3) if others didn't trigger
+        if not signal_data:
+            # We need deep history for BOS/OB logic
+            candles_m15_sma = await fetch_m15_candles(pair, count=100)
+            candles_1m_sma = await fetch_1m_candles(pair, count=200)
+            signal_data = check_sma_smc_strategy(candles_m15_sma, candles_1m_sma)
+
+        if signal_data:
+            direction = signal_data["signal"]
+            entry_price = signal_data["entry_price"]
+            rsi = signal_data["rsi"]
+            stochastic = signal_data["stochastic"]
+            volume_ratio = signal_data["volume_ratio"]
+            strategy_name = signal_data["strategy_name"]
             
             pair_display = format_pair_display(pair)
-            logger.info(f"🚨 POTENTIAL SETUP: {pair_display} -> {direction} @ {entry_price}. Validating H1 Trend...")
             
-            # Fetch H1 candles for Trend Filter
-            candles_h1 = await fetch_h1_candles(pair)
-            if not check_h1_trend(candles_h1, direction):
-                logger.info(f"❌ Setup discarded for {pair_display}: H1 Trend validation failed.")
-                return
+            # For Trend Exhaustion, we do extra H1 trend and 1m validation.
+            # SMC Sweep already did its own validation inside strategy.py.
+            if strategy_name == "Trend Exhaustion":
+                logger.info(f"🚨 POTENTIAL SETUP: {pair_display} -> {direction} @ {entry_price}. Validating M15 Trend...")
+                
+                # Fetch M15 candles for Trend Filter
+                candles_m15_trend = await fetch_m15_candles(pair)
+                if not check_m15_trend(candles_m15_trend, direction):
+                    logger.info(f"❌ Setup discarded for {pair_display}: M15 Trend validation failed.")
+                    return
 
-            logger.info(f"✅ H1 Trend validated. Fetching 1m candles for exhaustion check...")
+                logger.info(f"✅ M15 Trend validated. Fetching 1m candles for exhaustion check...")
 
-            # 5. Fetch 1-minute candles for Concept 2 validation
-            candles_1m = await fetch_1m_candles(pair)
-            if not validate_1m_exhaustion(candles_1m, direction):
-                logger.info(f"❌ Setup discarded for {pair_display}: 1m exhaustion validation failed.")
-                return
-
-            logger.info(f"✅ Setup validated! Sending signal for {pair_display} -> {direction}...")
+                # Fetch 1-minute candles for Concept 2 validation
+                candles_1m_exhaustion = await fetch_1m_candles(pair)
+                if not validate_1m_exhaustion(candles_1m_exhaustion, direction):
+                    logger.info(f"❌ Setup discarded for {pair_display}: 1m exhaustion validation failed.")
+                    return
+            
+            # --- SIGNAL CONFIRMED ---
+            logger.info(f"🚀 SIGNAL CONFIRMED: {pair_display} - {direction} ({strategy_name})")
 
             # Send signal notification to Telegram
             notifier.send_telegram_signal(
@@ -92,7 +112,8 @@ async def handle_candle_completed(pair: str, candle_history: list):
                 entry_price=entry_price,
                 rsi=rsi,
                 stochastic=stochastic,
-                volume=volume_ratio
+                volume=volume_ratio,
+                strategy=strategy_name
             )
 
             # Insert signal into Supabase DB
@@ -102,7 +123,8 @@ async def handle_candle_completed(pair: str, candle_history: list):
                 entry_price=entry_price,
                 rsi=rsi,
                 stochastic=stochastic,
-                volume=volume_ratio
+                volume=volume_ratio,
+                strategy=strategy_name
             )
 
             if signal_id:

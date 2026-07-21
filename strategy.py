@@ -3,7 +3,7 @@ import numpy as np
 import logging
 import config as config
 from datetime import datetime, timezone
-from indicators import calculate_ema
+from indicators import calculate_ema, calculate_sma
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Strategy")
@@ -47,9 +47,10 @@ def check_rsi_divergence(df: pd.DataFrame, direction: str, lookback: int = confi
             
     return False
 
-def check_strategy_signal(df: pd.DataFrame) -> dict:
+def check_trend_exhaustion(df: pd.DataFrame) -> dict:
     """
-    Checks the last completed 5m candle (index -2) for CALL/PUT signals using BB, RSI, Stoch, MACD, and Divergence.
+    Checks the last completed 5m candle (index -2) for CALL/PUT signals using BB, RSI, Stoch, and MACD.
+    Strategy: Trend-Aligned Exhaustion.
     """
     if len(df) < 30:
         return None
@@ -98,19 +99,227 @@ def check_strategy_signal(df: pd.DataFrame) -> dict:
             "stochastic": stoch_k,
             "volume_ratio": volume_ratio,
             "volume": volume,
-            "epoch": completed_candle['epoch']
+            "epoch": completed_candle['epoch'],
+            "strategy_name": "Trend Exhaustion"
         }
     return None
 
-def check_h1_trend(candles_h1: list, direction: str) -> bool:
+def check_smc_sweep(candles_m15: list, candles_1m: list) -> dict:
     """
-    Validates the H1 Trend using EMA 50 and EMA 200.
+    Checks for a Liquidity Sweep on the M15 timeframe and a rejection on the 1m timeframe.
+    Strategy: SMC Sweep.
     """
-    if len(candles_h1) < 200:
-        logger.warning("Not enough H1 candles to calculate EMA 200.")
+    if len(candles_m15) < 20 or len(candles_1m) < 5:
+        return None
+        
+    df_m15 = pd.DataFrame(candles_m15[-20:])
+    df_m15['high'] = pd.to_numeric(df_m15['high'])
+    df_m15['low'] = pd.to_numeric(df_m15['low'])
+    
+    # Exclude the currently forming M15 candle
+    historical_m15 = df_m15.iloc[:-1]
+    
+    highest_high = historical_m15['high'].max()
+    lowest_low = historical_m15['low'].min()
+    
+    completed_1m = candles_1m[-2]
+    
+    c_close = float(completed_1m['close'])
+    c_high = float(completed_1m['high'])
+    c_low = float(completed_1m['low'])
+    c_epoch = int(completed_1m['epoch'])
+    
+    if not is_valid_trading_session(c_epoch):
+        return None
+        
+    signal = None
+    
+    # CALL Setup: Swept the M15 Low, but closed back inside with a bullish pattern
+    if c_low < lowest_low and c_close > lowest_low:
+        if validate_1m_exhaustion(candles_1m, "CALL"):
+            signal = "CALL"
+            
+    # PUT Setup: Swept the M15 High, but closed back inside with a bearish pattern
+    elif c_high > highest_high and c_close < highest_high:
+        if validate_1m_exhaustion(candles_1m, "PUT"):
+            signal = "PUT"
+            
+    if signal:
+        logger.info(f"SMC SWEEP DETECTED: {signal} at {c_close} (HH: {highest_high}, LL: {lowest_low})")
+        return {
+            "signal": signal,
+            "entry_price": c_close,
+            "rsi": None,
+            "stochastic": None,
+            "volume_ratio": None,
+            "volume": float(completed_1m.get('volume', 1.0)),
+            "epoch": c_epoch,
+            "strategy_name": "SMC Sweep"
+        }
+    return None
+
+def check_sma_smc_strategy(candles_m15: list, candles_1m: list) -> dict:
+    """
+    Evaluates Strategy 3: SMA-SMC Continuation.
+    1. M15 SMA 9 & 21 for Direction.
+    2. M1 BOS and OB Identification.
+    3. M1 OB mitigation and rejection.
+    """
+    if len(candles_m15) < 30 or len(candles_1m) < 60:
+        return None
+        
+    df_m15 = pd.DataFrame(candles_m15)
+    df_m15['close'] = pd.to_numeric(df_m15['close'])
+    df_m15 = calculate_sma(df_m15, 9)
+    df_m15 = calculate_sma(df_m15, 21)
+    
+    last_m15 = df_m15.iloc[-2]
+    sma_9 = last_m15['sma_9']
+    sma_21 = last_m15['sma_21']
+    
+    if pd.isna(sma_9) or pd.isna(sma_21):
+        return None
+        
+    direction = "CALL" if sma_9 > sma_21 else "PUT"
+    
+    df_1m = pd.DataFrame(candles_1m)
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        df_1m[col] = pd.to_numeric(df_1m.get(col, 1.0))
+        
+    completed_1m = df_1m.iloc[-2]
+    c_epoch = int(completed_1m['epoch'])
+    
+    if not is_valid_trading_session(c_epoch):
+        return None
+        
+    # Use all historical candles for a deeper structural search, excluding the last 2
+    search_window = df_1m.iloc[:-2].reset_index(drop=True)
+    if len(search_window) < 50:
+        return None
+        
+    signal = None
+    
+    # We divide the history into two halves:
+    # First half: to find the major Swing High / Low
+    # Second half: to find the Break of Structure (BOS)
+    midpoint = len(search_window) // 2
+    
+    if direction == "CALL":
+        # 1. Find Swing High (Max high in the first half of the window)
+        first_half = search_window.iloc[:midpoint]
+        swing_high = first_half['high'].max()
+        swing_high_idx = first_half['high'].idxmax()
+        
+        # 2. Find BOS (Candle that closed above swing_high in the second half)
+        second_half = search_window.iloc[swing_high_idx+1:]
+        bos_candles = second_half[second_half['close'] > swing_high]
+        
+        if not bos_candles.empty:
+            bos_idx = bos_candles.index[0]
+            
+            # 3. Find Higher Low before BOS
+            pullback_leg = search_window.iloc[swing_high_idx:bos_idx+1]
+            higher_low = pullback_leg['low'].min()
+            higher_low_idx = pullback_leg['low'].idxmin()
+            
+            # 4. Find OB (Last Red Candle at/before Higher Low)
+            # Search backwards from higher_low_idx for a red candle
+            ob_idx = -1
+            for i in range(higher_low_idx, -1, -1):
+                if search_window.iloc[i]['close'] < search_window.iloc[i]['open']:
+                    ob_idx = i
+                    break
+                    
+            if ob_idx != -1:
+                ob_high = search_window.iloc[ob_idx]['high']
+                ob_low = search_window.iloc[ob_idx]['low']
+                
+                # Check Invalidation: Any candle closed below OB low after BOS?
+                invalid = False
+                for i in range(bos_idx, len(search_window)):
+                    if search_window.iloc[i]['close'] < ob_low:
+                        invalid = True
+                        break
+                        
+                if not invalid:
+                    # Check Mitigation & Rejection on completed candle
+                    c_low = completed_1m['low']
+                    c_close = completed_1m['close']
+                    
+                    if c_low <= ob_high and c_close > ob_high:
+                        # Rejection from OB
+                        if validate_1m_exhaustion(candles_1m, "CALL"):
+                            signal = "CALL"
+
+    elif direction == "PUT":
+        # 1. Find Swing Low (Min low in the first half of the window)
+        first_half = search_window.iloc[:midpoint]
+        swing_low = first_half['low'].min()
+        swing_low_idx = first_half['low'].idxmin()
+        
+        # 2. Find BOS (Candle that closed below swing_low in the second half)
+        second_half = search_window.iloc[swing_low_idx+1:]
+        bos_candles = second_half[second_half['close'] < swing_low]
+        
+        if not bos_candles.empty:
+            bos_idx = bos_candles.index[0]
+            
+            # 3. Find Lower High before BOS
+            pullback_leg = search_window.iloc[swing_low_idx:bos_idx+1]
+            lower_high = pullback_leg['high'].max()
+            lower_high_idx = pullback_leg['high'].idxmax()
+            
+            # 4. Find OB (Last Green Candle at/before Lower High)
+            ob_idx = -1
+            for i in range(lower_high_idx, -1, -1):
+                if search_window.iloc[i]['close'] > search_window.iloc[i]['open']:
+                    ob_idx = i
+                    break
+                    
+            if ob_idx != -1:
+                ob_high = search_window.iloc[ob_idx]['high']
+                ob_low = search_window.iloc[ob_idx]['low']
+                
+                # Check Invalidation: Any candle closed above OB high after BOS?
+                invalid = False
+                for i in range(bos_idx, len(search_window)):
+                    if search_window.iloc[i]['close'] > ob_high:
+                        invalid = True
+                        break
+                        
+                if not invalid:
+                    # Check Mitigation & Rejection on completed candle
+                    c_high = completed_1m['high']
+                    c_close = completed_1m['close']
+                    
+                    if c_high >= ob_low and c_close < ob_low:
+                        # Rejection from OB
+                        if validate_1m_exhaustion(candles_1m, "PUT"):
+                            signal = "PUT"
+
+    if signal:
+        logger.info(f"SMA-SMC SIGNAL: {signal} @ {completed_1m['close']}")
+        return {
+            "signal": signal,
+            "entry_price": float(completed_1m['close']),
+            "rsi": None,
+            "stochastic": None,
+            "volume_ratio": None,
+            "volume": float(completed_1m['volume']),
+            "epoch": c_epoch,
+            "strategy_name": "SMA-SMC Continuation"
+        }
+    return None
+
+def check_m15_trend(candles_m15: list, direction: str) -> bool:
+    """
+    Validates the M15 Trend using EMA 50 and EMA 200.
+    """
+    if len(candles_m15) < 200:
+        logger.warning("Not enough M15 candles to calculate EMA 200.")
         return True # Allow if not enough data
         
-    df = pd.DataFrame(candles_h1)
+    df = pd.DataFrame(candles_m15)
     df['close'] = pd.to_numeric(df['close'])
     
     df = calculate_ema(df, config.EMA_TREND_FAST)
@@ -123,14 +332,14 @@ def check_h1_trend(candles_h1: list, direction: str) -> bool:
         # Uptrend: EMA 50 > EMA 200
         is_uptrend = last_ema_50 > last_ema_200
         if not is_uptrend:
-            logger.info("H1 Trend Validation REJECTED: Not in an uptrend (EMA 50 < EMA 200).")
+            logger.info("M15 Trend Validation REJECTED: Not in an uptrend (EMA 50 < EMA 200).")
         return is_uptrend
         
     elif direction == "PUT":
         # Downtrend: EMA 50 < EMA 200
         is_downtrend = last_ema_50 < last_ema_200
         if not is_downtrend:
-            logger.info("H1 Trend Validation REJECTED: Not in a downtrend (EMA 50 > EMA 200).")
+            logger.info("M15 Trend Validation REJECTED: Not in a downtrend (EMA 50 > EMA 200).")
         return is_downtrend
         
     return False
