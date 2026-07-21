@@ -82,12 +82,12 @@ def check_strategy_signal(df: pd.DataFrame) -> dict:
     
     # Check potential CALL Condition
     if (close < bb_lower) and (stoch_k < config.STOCH_OVERSOLD) and (rsi < config.RSI_OVERSOLD):
-        if volume_condition and macd_bullish:
+        if volume_condition:
             signal = "CALL"
 
     # Check potential PUT Condition
     elif (close > bb_upper) and (stoch_k > config.STOCH_OVERBOUGHT) and (rsi > config.RSI_OVERBOUGHT):
-        if volume_condition and macd_bearish:
+        if volume_condition:
             signal = "PUT"
 
     if signal:
