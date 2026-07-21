@@ -31,7 +31,7 @@ class DerivDataFeed:
                         "end": "latest",
                         "start": 1,
                         "style": "candles",
-                        "granularity": 300,  # 5 minutes in seconds
+                        "granularity": 60,  # 1 minute in seconds
                         "subscribe": 1
                     }
                     await ws.send(json.dumps(subscribe_request))
@@ -93,7 +93,7 @@ class DerivDataFeed:
                         history[-1] = candle
                     # If it's a new candle (newer epoch), append it
                     elif candle["epoch"] > last_candle["epoch"]:
-                        logger.info(f"New 5m candle started for {pair}. Previous candle closed at {last_candle['close']}")
+                        logger.info(f"New 1m candle started for {pair}. Previous candle closed at {last_candle['close']}")
                         
                         # Append the new open candle
                         history.append(candle)
@@ -151,6 +151,36 @@ async def fetch_1m_candles(pair: str, count: int = 5) -> list:
             return data.get("candles", [])
     except Exception as e:
         logger.error(f"Failed to fetch 1m candles: {e}")
+        return []
+
+async def fetch_5m_candles(pair: str, count: int = 50) -> list:
+    """
+    Performs a one-shot WebSocket request to fetch historical 5-minute candles.
+    Used for Strategy 1.
+    """
+    logger.info(f"Fetching {count} 5m candles for {pair}...")
+    try:
+        async with websockets.connect(config.DERIV_WS_URL) as ws:
+            request = {
+                "ticks_history": pair,
+                "adjust_start_time": 1,
+                "count": count,
+                "end": "latest",
+                "start": 1,
+                "style": "candles",
+                "granularity": 300  # 5 minutes in seconds
+            }
+            await ws.send(json.dumps(request))
+            response = await ws.recv()
+            data = json.loads(response)
+            
+            if "error" in data:
+                logger.error(f"Error fetching 5m candles: {data['error']['message']}")
+                return []
+                
+            return data.get("candles", [])
+    except Exception as e:
+        logger.error(f"Failed to fetch 5m candles: {e}")
         return []
 
 async def fetch_m15_candles(pair: str, count: int = 250) -> list:

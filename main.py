@@ -11,7 +11,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import config
 import database
 import notifier
-from data_feed import DerivDataFeed, fetch_1m_candles, fetch_m15_candles
+from data_feed import DerivDataFeed, fetch_1m_candles, fetch_5m_candles, fetch_m15_candles
 from indicators import calculate_all_indicators
 from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend
 
@@ -57,19 +57,34 @@ async def handle_candle_completed(pair: str, candle_history: list):
             logger.info(f"Signal evaluation skipped for {format_pair_display(pair)}: An active trade is already running.")
             return
 
-        # 3. Check for Trend-Aligned Exhaustion Signal (Strategy 1)
-        signal_data = check_trend_exhaustion(df)
+        signal_data = None
+        current_minute = datetime.now(timezone.utc).minute
+
+        # -------------------------------------------------------------
+        # Evaluate Strategy 1 (Trend Exhaustion) ONLY every 5th minute
+        # -------------------------------------------------------------
+        if current_minute % 5 == 0:
+            logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached. Checking Strategy 1 (Trend Exhaustion)...")
+            candles_5m = await fetch_5m_candles(pair)
+            if candles_5m and len(candles_5m) > 30:
+                df_5m = pd.DataFrame(candles_5m)
+                df_with_indicators = calculate_all_indicators(df_5m)
+                signal_data = check_trend_exhaustion(df_with_indicators)
         
-        # 4. Check for SMC Sweep Signal (Strategy 2) if Strategy 1 didn't trigger
+        # -------------------------------------------------------------
+        # Evaluate Strategy 2 (SMC Sweep) & 3 (SMA-SMC) EVERY minute
+        # -------------------------------------------------------------
         if not signal_data:
-            candles_m15 = await fetch_m15_candles(pair, count=50) # Get M15 for SMC Sweep
-            candles_1m = await fetch_1m_candles(pair) # Get 1m for SMC Sweep rejection
-            signal_data = check_smc_sweep(candles_m15, candles_1m)
+            candles_m15_sweep = await fetch_m15_candles(pair, count=50) # Get M15 for SMC Sweep
+            # We already have the 1m history from the WS pulse! (df is a list of dicts here)
+            candles_1m = candle_history
+            signal_data = check_smc_sweep(candles_m15_sweep, candles_1m)
             
-        # 5. Check for SMA-SMC Continuation (Strategy 3) if others didn't trigger
         if not signal_data:
             # We need deep history for BOS/OB logic
             candles_m15_sma = await fetch_m15_candles(pair, count=100)
+            # The WS pulse (df) only has up to 100 candles right now (as per data_feed pop limit)
+            # We need 200 candles, so let's fetch it explicitly.
             candles_1m_sma = await fetch_1m_candles(pair, count=200)
             signal_data = check_sma_smc_strategy(candles_m15_sma, candles_1m_sma)
 
