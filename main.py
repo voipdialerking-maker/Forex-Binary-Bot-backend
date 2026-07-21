@@ -5,6 +5,7 @@ import http.server
 import threading
 import os
 import sys
+import pandas as pd
 # Add current directory to path to support direct imports in all environments
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
