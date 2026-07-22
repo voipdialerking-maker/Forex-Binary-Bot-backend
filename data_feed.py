@@ -22,6 +22,16 @@ class DerivDataFeed:
                 self.websocket = ws
                 self.running = True
                 
+                if getattr(config, 'DERIV_TOKEN', ""):
+                    logger.info("Authorizing WebSocket connection with token...")
+                    await ws.send(json.dumps({"authorize": config.DERIV_TOKEN}))
+                    auth_resp = await ws.recv()
+                    auth_data = json.loads(auth_resp)
+                    if "error" in auth_data:
+                        logger.error(f"Authorization failed: {auth_data['error']['message']}")
+                    else:
+                        logger.info("Authorization successful.")
+                
                 # Subscribe to each pair
                 for pair in self.pairs:
                     subscribe_request = {
@@ -131,6 +141,10 @@ async def fetch_1m_candles(pair: str, count: int = 5) -> list:
     logger.info(f"Fetching {count} 1m candles for {pair}...")
     try:
         async with websockets.connect(config.DERIV_WS_URL) as ws:
+            if getattr(config, 'DERIV_TOKEN', ""):
+                await ws.send(json.dumps({"authorize": config.DERIV_TOKEN}))
+                await ws.recv()  # consume auth response
+                
             request = {
                 "ticks_history": pair,
                 "adjust_start_time": 1,
@@ -161,6 +175,10 @@ async def fetch_5m_candles(pair: str, count: int = 50) -> list:
     logger.info(f"Fetching {count} 5m candles for {pair}...")
     try:
         async with websockets.connect(config.DERIV_WS_URL) as ws:
+            if getattr(config, 'DERIV_TOKEN', ""):
+                await ws.send(json.dumps({"authorize": config.DERIV_TOKEN}))
+                await ws.recv()
+                
             request = {
                 "ticks_history": pair,
                 "adjust_start_time": 1,
@@ -191,6 +209,10 @@ async def fetch_m15_candles(pair: str, count: int = 250) -> list:
     logger.info(f"Fetching {count} M15 candles for {pair}...")
     try:
         async with websockets.connect(config.DERIV_WS_URL) as ws:
+            if getattr(config, 'DERIV_TOKEN', ""):
+                await ws.send(json.dumps({"authorize": config.DERIV_TOKEN}))
+                await ws.recv()
+                
             request = {
                 "ticks_history": pair,
                 "adjust_start_time": 1,

@@ -14,6 +14,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # Deriv API Config
 DERIV_APP_ID = os.getenv("DERIV_APP_ID", "1089")
+DERIV_TOKEN = os.getenv("DERIV_TOKEN", "")
 DERIV_WS_URL = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
 
 # Trading pairs to monitor (Deriv symbols for Forex)
