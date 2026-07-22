@@ -395,5 +395,88 @@ def validate_1m_exhaustion(candles_1m: list, direction: str) -> bool:
         else:
             logger.info("1m Validation REJECTED: No bearish pattern or rejection wick found.")
             return False
-
     return False
+
+def check_vsa_scalp_strategy(candles_1m: list) -> dict:
+    """
+    Evaluates Strategy 4: VSA Scalp (Volume Climax + RSI + Price Action Confirmation).
+    Looks for a climax volume bar with extreme RSI, and waits for the NEXT candle to confirm the reversal.
+    """
+    if len(candles_1m) < 30:
+        return None
+        
+    import pandas as pd
+    from indicators import calculate_bollinger_bands, calculate_rsi, calculate_volume_metrics
+    
+    df = pd.DataFrame(candles_1m)
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        df[col] = pd.to_numeric(df.get(col, 1.0))
+        
+    df = calculate_bollinger_bands(df, 20, 2.0)
+    df = calculate_rsi(df, 7) # RSI 7 for fast 1m scalping
+    df = calculate_volume_metrics(df, 20)
+    
+    if len(df) < 3:
+        return None
+        
+    # candles_1m[-1] is the forming candle, -2 is the completed confirmation, -3 is the climax
+    confirmation_candle = df.iloc[-2]
+    climax_candle = df.iloc[-3]
+    
+    from strategy import is_valid_trading_session
+    c_epoch = int(confirmation_candle['epoch'])
+    if not is_valid_trading_session(c_epoch):
+        return None
+        
+    conf_open = float(confirmation_candle['open'])
+    conf_close = float(confirmation_candle['close'])
+    
+    climax_open = float(climax_candle['open'])
+    climax_close = float(climax_candle['close'])
+    climax_high = float(climax_candle['high'])
+    climax_low = float(climax_candle['low'])
+    
+    climax_volume_ratio = float(climax_candle['volume_ratio'])
+    climax_rsi = float(climax_candle['rsi'])
+    climax_bb_upper = float(climax_candle['bb_upper'])
+    climax_bb_lower = float(climax_candle['bb_lower'])
+    
+    # CALL (UP) Setup
+    is_climax_red = climax_close < climax_open
+    is_conf_green = conf_close > conf_open
+    
+    if is_climax_red and climax_rsi < 25 and climax_volume_ratio >= 2.5 and climax_low <= climax_bb_lower:
+        if is_conf_green:
+            return {
+                "pair": None,
+                "direction": "CALL",
+                "signal": "VSA_SCALP_REVERSAL",
+                "entry_price": conf_close,
+                "rsi": climax_rsi,
+                "stochastic": None,
+                "volume_ratio": climax_volume_ratio,
+                "volume": float(climax_candle.get('volume', 1.0)),
+                "epoch": c_epoch,
+                "strategy_name": "VSA Scalp"
+            }
+            
+    # PUT (DOWN) Setup
+    is_climax_green = climax_close > climax_open
+    is_conf_red = conf_close < conf_open
+    
+    if is_climax_green and climax_rsi > 75 and climax_volume_ratio >= 2.5 and climax_high >= climax_bb_upper:
+        if is_conf_red:
+            return {
+                "pair": None,
+                "direction": "PUT",
+                "signal": "VSA_SCALP_REVERSAL",
+                "entry_price": conf_close,
+                "rsi": climax_rsi,
+                "stochastic": None,
+                "volume_ratio": climax_volume_ratio,
+                "volume": float(climax_candle.get('volume', 1.0)),
+                "epoch": c_epoch,
+                "strategy_name": "VSA Scalp"
+            }
+
+    return None

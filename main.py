@@ -14,7 +14,7 @@ import database
 import notifier
 from data_feed import DerivDataFeed, fetch_1m_candles, fetch_5m_candles, fetch_m15_candles
 from indicators import calculate_all_indicators
-from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend
+from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Main")
@@ -88,6 +88,10 @@ async def handle_candle_completed(pair: str, candle_history: list):
             # We need 200 candles, so let's fetch it explicitly.
             candles_1m_sma = await fetch_1m_candles(pair, count=200)
             signal_data = check_sma_smc_strategy(candles_m15_sma, candles_1m_sma)
+            
+        if not signal_data:
+            # We already have 200 1m candles fetched above if we reached here
+            signal_data = check_vsa_scalp_strategy(candles_1m_sma)
 
         if signal_data:
             direction = signal_data["signal"]

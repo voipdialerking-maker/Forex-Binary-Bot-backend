@@ -110,6 +110,11 @@ def calculate_all_indicators(candles: list) -> pd.DataFrame:
     import config
     df = calculate_bollinger_bands(df, config.BOLLINGER_PERIOD, config.BOLLINGER_DEV)
     df = calculate_rsi(df, config.RSI_PERIOD)
+    
+    # Also calculate a fast RSI (7) for VSA strategy
+    df_fast_rsi = calculate_rsi(df, 7)
+    df['rsi_7'] = df_fast_rsi['rsi']
+    
     df = calculate_stochastic(df, config.STOCH_K_PERIOD, config.STOCH_D_PERIOD)
     df = calculate_macd(df, config.MACD_FAST, config.MACD_SLOW, config.MACD_SIGNAL)
     df = calculate_volume_metrics(df, config.VOLUME_MA_PERIOD)
