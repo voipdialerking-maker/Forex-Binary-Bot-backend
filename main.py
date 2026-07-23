@@ -64,10 +64,10 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
         # Set up dynamic fetchers based on data source
         if source == "tiingo":
             from tiingo_client import fetch_tiingo_candles_cached
-            fetch_5m = lambda p, c=50: fetch_tiingo_candles_cached(p, "5m", c)
-            fetch_m15 = lambda p, c=250: fetch_tiingo_candles_cached(p, "15m", c)
+            fetch_5m = lambda p, count=50: fetch_tiingo_candles_cached(p, "5m", count)
+            fetch_m15 = lambda p, count=250: fetch_tiingo_candles_cached(p, "15m", count)
             # 1m is passed directly in candle_history, but just in case:
-            fetch_1m = lambda p, c=200: fetch_tiingo_candles_cached(p, "1m", c)
+            fetch_1m = lambda p, count=200: fetch_tiingo_candles_cached(p, "1m", count)
         else:
             fetch_5m = fetch_5m_candles
             fetch_m15 = fetch_m15_candles
