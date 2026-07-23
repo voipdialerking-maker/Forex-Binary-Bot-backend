@@ -66,12 +66,9 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
             from tiingo_client import fetch_tiingo_candles_cached
             fetch_5m = lambda p, count=50: fetch_tiingo_candles_cached(p, "5m", count)
             fetch_m15 = lambda p, count=250: fetch_tiingo_candles_cached(p, "15m", count)
-            # 1m is passed directly in candle_history, but just in case:
-            fetch_1m = lambda p, count=200: fetch_tiingo_candles_cached(p, "1m", count)
         else:
             fetch_5m = fetch_5m_candles
             fetch_m15 = fetch_m15_candles
-            fetch_1m = fetch_1m_candles
 
         # -------------------------------------------------------------
         # Evaluate Strategy 1 (Trend Exhaustion) ONLY every 5th minute
@@ -96,9 +93,8 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
         if not signal_data:
             # We need deep history for BOS/OB logic
             candles_m15_sma = await fetch_m15(pair, count=100)
-            # The WS pulse (df) only has up to 100 candles right now (as per data_feed pop limit)
-            # We need 200 candles, so let's fetch it explicitly.
-            candles_1m_sma = await fetch_1m(pair, count=200)
+            # candle_history now contains 250 candles from the data feed
+            candles_1m_sma = candle_history
             signal_data = check_sma_smc_strategy(candles_m15_sma, candles_1m_sma)
             
         if not signal_data:
@@ -132,7 +128,7 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
                 logger.info(f"✅ M15 Trend validated. Fetching 1m candles for exhaustion check...")
 
                 # Fetch 1-minute candles for Concept 2 validation
-                candles_1m_exhaustion = await fetch_1m(pair)
+                candles_1m_exhaustion = candle_history
                 if not validate_1m_exhaustion(candles_1m_exhaustion, direction):
                     logger.info(f"❌ Setup discarded for {pair_display}: 1m exhaustion validation failed.")
                     return

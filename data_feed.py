@@ -40,7 +40,7 @@ class DerivDataFeed:
                     subscribe_request = {
                         "ticks_history": pair,
                         "adjust_start_time": 1,
-                        "count": 200,
+                        "count": 250,
                         "end": "latest",
                         "start": 1,
                         "style": "candles",
@@ -117,8 +117,8 @@ class DerivDataFeed:
                         # Append the new open candle
                         history.append(candle)
                         
-                        # Keep history size clean
-                        if len(history) > 100:
+                        # Keep history size clean (250 is enough for all strategies)
+                        if len(history) > 250:
                             history.pop(0)
                         
                         # Invoke callback: A candle has just completed!
@@ -148,7 +148,7 @@ class DerivDataFeed:
                 try:
                     logger.debug(f"Polling Tiingo for {pair} 1m candles...")
                     # 1m candles are fetched fresh, not cached
-                    candles = await tiingo_client.fetch_tiingo_candles_cached(pair, "1m", 100)
+                    candles = await tiingo_client.fetch_tiingo_candles_cached(pair, "1m", 250)
                     if candles and self.callback:
                         asyncio.create_task(self.callback(pair, candles, source="tiingo"))
                 except Exception as e:
