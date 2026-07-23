@@ -283,8 +283,8 @@ async def main():
     # 3. Start the database cleanup scheduler in the background
     asyncio.create_task(database_cleanup_scheduler())
 
-    # 4. Initialize and run the Deriv Data Feed
-    feed = DerivDataFeed(callback=handle_candle_completed)
+    # 4. Initialize and run the Tiingo Data Feed
+    feed = TiingoDataFeed(pairs=config.MONITORED_PAIRS, callback=handle_candle_completed)
     await feed.run()
 
 if __name__ == "__main__":
