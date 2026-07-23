@@ -32,9 +32,9 @@ def format_pair_display(pair: str) -> str:
         return f"{pair[3:6]}/{pair[6:]}"
     return pair
 
-async def handle_candle_completed(pair: str, candle_history: list):
+async def handle_candle_completed(pair: str, candle_history: list, source: str = "deriv"):
     """
-    Callback triggered when a 5-minute candle closes.
+    Callback triggered when a 1-minute candle closes.
     """
     try:
         # 1. Convert to DataFrame and calculate indicators
@@ -61,12 +61,24 @@ async def handle_candle_completed(pair: str, candle_history: list):
         signal_data = None
         current_minute = datetime.now(timezone.utc).minute
 
+        # Set up dynamic fetchers based on data source
+        if source == "tiingo":
+            from tiingo_client import fetch_tiingo_candles_cached
+            fetch_5m = lambda p, c=50: fetch_tiingo_candles_cached(p, "5m", c)
+            fetch_m15 = lambda p, c=250: fetch_tiingo_candles_cached(p, "15m", c)
+            # 1m is passed directly in candle_history, but just in case:
+            fetch_1m = lambda p, c=200: fetch_tiingo_candles_cached(p, "1m", c)
+        else:
+            fetch_5m = fetch_5m_candles
+            fetch_m15 = fetch_m15_candles
+            fetch_1m = fetch_1m_candles
+
         # -------------------------------------------------------------
         # Evaluate Strategy 1 (Trend Exhaustion) ONLY every 5th minute
         # -------------------------------------------------------------
         if current_minute % 5 == 0:
             logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached. Checking Strategy 1 (Trend Exhaustion)...")
-            candles_5m = await fetch_5m_candles(pair)
+            candles_5m = await fetch_5m(pair)
             if candles_5m and len(candles_5m) > 30:
                 df_5m = pd.DataFrame(candles_5m)
                 df_with_indicators = calculate_all_indicators(df_5m)
@@ -76,22 +88,25 @@ async def handle_candle_completed(pair: str, candle_history: list):
         # Evaluate Strategy 2 (SMC Sweep) & 3 (SMA-SMC) EVERY minute
         # -------------------------------------------------------------
         if not signal_data:
-            candles_m15_sweep = await fetch_m15_candles(pair, count=50) # Get M15 for SMC Sweep
-            # We already have the 1m history from the WS pulse! (df is a list of dicts here)
+            candles_m15_sweep = await fetch_m15(pair, count=50) # Get M15 for SMC Sweep
+            # We already have the 1m history from the WS/poller pulse! (df is a list of dicts here)
             candles_1m = candle_history
             signal_data = check_smc_sweep(candles_m15_sweep, candles_1m)
             
         if not signal_data:
             # We need deep history for BOS/OB logic
-            candles_m15_sma = await fetch_m15_candles(pair, count=100)
+            candles_m15_sma = await fetch_m15(pair, count=100)
             # The WS pulse (df) only has up to 100 candles right now (as per data_feed pop limit)
             # We need 200 candles, so let's fetch it explicitly.
-            candles_1m_sma = await fetch_1m_candles(pair, count=200)
+            candles_1m_sma = await fetch_1m(pair, count=200)
             signal_data = check_sma_smc_strategy(candles_m15_sma, candles_1m_sma)
             
         if not signal_data:
-            # We already have 200 1m candles fetched above if we reached here
-            signal_data = check_vsa_scalp_strategy(candles_1m_sma)
+            if source == "tiingo":
+                logger.info(f"[{format_pair_display(pair)}] Skipping Strategy 4 (VSA Scalping) because Tiingo lacks volume data.")
+            else:
+                # We already have 200 1m candles fetched above if we reached here
+                signal_data = check_vsa_scalp_strategy(candles_1m_sma)
 
         if signal_data:
             direction = signal_data["signal"]
@@ -109,7 +124,7 @@ async def handle_candle_completed(pair: str, candle_history: list):
                 logger.info(f"🚨 POTENTIAL SETUP: {pair_display} -> {direction} @ {entry_price}. Validating M15 Trend...")
                 
                 # Fetch M15 candles for Trend Filter
-                candles_m15_trend = await fetch_m15_candles(pair)
+                candles_m15_trend = await fetch_m15(pair)
                 if not check_m15_trend(candles_m15_trend, direction):
                     logger.info(f"❌ Setup discarded for {pair_display}: M15 Trend validation failed.")
                     return
@@ -117,7 +132,7 @@ async def handle_candle_completed(pair: str, candle_history: list):
                 logger.info(f"✅ M15 Trend validated. Fetching 1m candles for exhaustion check...")
 
                 # Fetch 1-minute candles for Concept 2 validation
-                candles_1m_exhaustion = await fetch_1m_candles(pair)
+                candles_1m_exhaustion = await fetch_1m(pair)
                 if not validate_1m_exhaustion(candles_1m_exhaustion, direction):
                     logger.info(f"❌ Setup discarded for {pair_display}: 1m exhaustion validation failed.")
                     return

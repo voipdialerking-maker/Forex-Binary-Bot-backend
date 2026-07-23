@@ -3,6 +3,7 @@ import json
 import logging
 import websockets
 import config as config
+import tiingo_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("DataFeed")
@@ -14,6 +15,8 @@ class DerivDataFeed:
         self.candles_history = {pair: [] for pair in self.pairs}
         self.websocket = None
         self.running = False
+        self.tiingo_fallback_pairs = set()
+        self.tiingo_task = None
 
     async def connect_and_subscribe(self):
         logger.info(f"Connecting to Deriv WS: {config.DERIV_WS_URL}")
@@ -64,6 +67,12 @@ class DerivDataFeed:
                 # Check for errors
                 if "error" in data:
                     logger.error(f"Error from Deriv API: {data['error']['message']}")
+                    req = data.get("echo_req", {})
+                    pair = req.get("ticks_history") or req.get("ticks")
+                    if pair and ("invalid" in data["error"]["message"].lower() or data["error"].get("code") == "InvalidSymbol"):
+                        logger.warning(f"{pair} marked for Tiingo Fallback.")
+                        self.tiingo_fallback_pairs.add(pair)
+                        self.start_tiingo_poller()
                     continue
 
                 # Identify which pair this message belongs to
@@ -116,7 +125,7 @@ class DerivDataFeed:
                         # The completed candle is now history[-2] (the second to last)
                         if self.callback:
                             # Run async callback
-                            asyncio.create_task(self.callback(pair, history))
+                            asyncio.create_task(self.callback(pair, history, source="deriv"))
                             
             except asyncio.TimeoutError:
                 logger.warning("Deriv WebSocket silent timeout (60s without data). Reconnecting...")
@@ -127,6 +136,24 @@ class DerivDataFeed:
             except Exception as e:
                 logger.error(f"Error parsing WebSocket message: {e}")
                 await asyncio.sleep(1)
+
+    def start_tiingo_poller(self):
+        if self.tiingo_task is None or self.tiingo_task.done():
+            self.tiingo_task = asyncio.create_task(self.tiingo_polling_loop())
+
+    async def tiingo_polling_loop(self):
+        logger.info("Started Tiingo fallback polling loop.")
+        while self.running:
+            for pair in list(self.tiingo_fallback_pairs):
+                try:
+                    logger.debug(f"Polling Tiingo for {pair} 1m candles...")
+                    # 1m candles are fetched fresh, not cached
+                    candles = await tiingo_client.fetch_tiingo_candles_cached(pair, "1m", 100)
+                    if candles and self.callback:
+                        asyncio.create_task(self.callback(pair, candles, source="tiingo"))
+                except Exception as e:
+                    logger.error(f"Error polling Tiingo for {pair}: {e}")
+            await asyncio.sleep(60) # Poll every 1 minute
 
     async def run(self):
         while True:

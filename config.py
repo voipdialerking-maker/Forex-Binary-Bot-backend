@@ -17,6 +17,10 @@ DERIV_APP_ID = os.getenv("DERIV_APP_ID", "1089")
 DERIV_TOKEN = os.getenv("DERIV_TOKEN", "")
 DERIV_WS_URL = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
 
+# Tiingo API Config
+TIINGO_TOKEN = os.getenv("TIINGO_TOKEN", "6d5442a6595792eed12d7371665df2190ade68fe")
+TIINGO_API_URL = "https://api.tiingo.com/tiingo/fx/prices"
+
 # Trading pairs to monitor (Deriv symbols for Forex)
 MONITORED_PAIRS = [
     "frxEURUSD",
