@@ -15,88 +15,102 @@ def get_tiingo_ticker(deriv_pair: str) -> str:
     """Converts a Deriv pair (e.g. frxEURUSD) to Tiingo ticker (e.g. eurusd)"""
     return deriv_pair.replace("frx", "").lower()
 
-async def _fetch_tiingo(pair: str, interval: str, count: int) -> list:
-    """Internal function to perform the actual HTTP request to Tiingo."""
-    ticker = get_tiingo_ticker(pair)
-    
-    # Tiingo uses 1min, 5min, 15min
+def get_deriv_pair(tiingo_ticker: str) -> str:
+    """Converts a Tiingo ticker back to a Deriv pair"""
+    return "frx" + tiingo_ticker.upper()
+
+async def fetch_multiple_tiingo_candles(pairs: list, interval: str, count: int) -> dict:
+    """
+    Fetches candles for MULTIPLE pairs in a single API request to save rate limits.
+    Returns a dictionary mapping Deriv pairs to their respective candle arrays.
+    """
+    if not pairs:
+        return {}
+        
+    tickers = ",".join([get_tiingo_ticker(p) for p in pairs])
     tiingo_freq = interval.replace("m", "min")
     
     url = config.TIINGO_API_URL
     params = {
-        "tickers": ticker,
+        "tickers": tickers,
         "resampleFreq": tiingo_freq,
         "token": config.TIINGO_TOKEN,
     }
     
     try:
-        # Run synchronous requests.get in a separate thread so it doesn't block the asyncio event loop
-        response = await asyncio.to_thread(requests.get, url, params=params, timeout=10)
+        response = await asyncio.to_thread(requests.get, url, params=params, timeout=15)
         
         if response.status_code != 200:
             logger.error(f"Tiingo API Error {response.status_code}: {response.text}")
-            return []
+            return {}
             
         data = response.json()
         if not data:
-            return []
+            return {}
             
-        # Format Tiingo response to match Deriv's OHLC format
-        # Deriv format: {"open": 1.1, "high": 1.2, "low": 1.0, "close": 1.15, "epoch": 1234567890, "volume": 1.0}
-        formatted_candles = []
-        for candle in data:
-            # Tiingo returns date as "2026-07-23T00:00:00.000Z"
-            dt = datetime.strptime(candle["date"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+        # Group data by ticker
+        results = {p: [] for p in pairs}
+        
+        for item in data:
+            ticker = item.get("ticker", "")
+            if not ticker:
+                continue
+                
+            pair = get_deriv_pair(ticker)
+            if pair not in results:
+                continue
+                
+            dt = datetime.strptime(item["date"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
             epoch = int(dt.timestamp())
             
-            formatted_candles.append({
-                "open": float(candle["open"]),
-                "high": float(candle["high"]),
-                "low": float(candle["low"]),
-                "close": float(candle["close"]),
+            results[pair].append({
+                "open": float(item["open"]),
+                "high": float(item["high"]),
+                "low": float(item["low"]),
+                "close": float(item["close"]),
                 "epoch": epoch,
-                "volume": 1.0  # Tiingo Forex doesn't provide volume, default to 1.0
+                "volume": 1.0
             })
             
-        # Return the last 'count' candles
-        return formatted_candles[-count:]
+        # Limit each array to the requested count
+        for pair in results:
+            results[pair] = results[pair][-count:]
+            
+        return results
         
     except Exception as e:
-        logger.error(f"Failed to fetch data from Tiingo for {pair}: {e}")
-        return []
+        logger.error(f"Failed to fetch bulk data from Tiingo: {e}")
+        return {}
 
 async def fetch_tiingo_candles_cached(pair: str, interval: str, count: int) -> list:
     """
     Fetches candles from Tiingo with caching for higher timeframes (5m, 15m) to respect rate limits.
-    1m candles are fetched fresh every time (as they change every minute).
+    If the cache is empty, it fetches fresh data for this single pair.
     """
     current_time = time.time()
     
-    # Initialize cache for this pair if not exists
     if pair not in _CACHE:
         _CACHE[pair] = {}
         
     if interval not in _CACHE[pair]:
         _CACHE[pair][interval] = {"data": [], "last_fetched": 0}
         
-    # Determine cache duration based on interval
     cache_duration = 0
     if interval == "5m":
-        cache_duration = 300  # 5 minutes in seconds
+        cache_duration = 300
     elif interval == "15m":
-        cache_duration = 900  # 15 minutes in seconds
+        cache_duration = 900
         
     cache_entry = _CACHE[pair][interval]
     
-    # If the cache is still valid, return the cached data
     if current_time - cache_entry["last_fetched"] < cache_duration and cache_entry["data"]:
         return cache_entry["data"]
         
-    # Otherwise, fetch fresh data
-    data = await _fetch_tiingo(pair, interval, count)
+    # Fetch fresh data (using the bulk function but with a list of 1)
+    results = await fetch_multiple_tiingo_candles([pair], interval, count)
+    data = results.get(pair, [])
     
     if data:
-        # Update cache
         cache_entry["data"] = data
         cache_entry["last_fetched"] = current_time
         logger.info(f"Fetched fresh {interval} data from Tiingo for {pair}.")

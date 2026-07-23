@@ -1,263 +1,90 @@
-import asyncio
-import json
 import logging
-import websockets
-import config as config
+import asyncio
+from datetime import datetime
 import tiingo_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("DataFeed")
 
-class DerivDataFeed:
-    def __init__(self, pairs=None, callback=None):
-        self.pairs = pairs or config.MONITORED_PAIRS
-        self.callback = callback  # Function to call when a candle completes: callback(pair, df)
-        self.candles_history = {pair: [] for pair in self.pairs}
-        self.websocket = None
+class TiingoDataFeed:
+    """
+    Primary Data Feed using Tiingo REST API.
+    Polls 1-minute candles for all configured pairs in a SINGLE API request
+    every 60 seconds to conserve API limits.
+    """
+    def __init__(self, pairs: list, callback=None):
+        self.pairs = pairs
+        self.callback = callback
         self.running = False
-        self.tiingo_fallback_pairs = set()
-        self.tiingo_task = None
+        
+        # Keep an internal history of the last 250 candles for each pair
+        self.candles_history = {p: [] for p in pairs}
 
-    async def connect_and_subscribe(self):
-        logger.info(f"Connecting to Deriv WS: {config.DERIV_WS_URL}")
-        try:
-            async with websockets.connect(config.DERIV_WS_URL) as ws:
-                self.websocket = ws
-                self.running = True
-                
-                if getattr(config, 'DERIV_TOKEN', ""):
-                    logger.info("Authorizing WebSocket connection with token...")
-                    await ws.send(json.dumps({"authorize": config.DERIV_TOKEN}))
-                    auth_resp = await ws.recv()
-                    auth_data = json.loads(auth_resp)
-                    if "error" in auth_data:
-                        logger.error(f"Authorization failed: {auth_data['error']['message']}")
-                    else:
-                        logger.info("Authorization successful.")
-                
-                # Subscribe to each pair
-                for pair in self.pairs:
-                    subscribe_request = {
-                        "ticks_history": pair,
-                        "adjust_start_time": 1,
-                        "count": 250,
-                        "end": "latest",
-                        "start": 1,
-                        "style": "candles",
-                        "granularity": 60,  # 1 minute in seconds
-                        "subscribe": 1
-                    }
-                    await ws.send(json.dumps(subscribe_request))
-                    logger.info(f"Sent subscription request for {pair}")
-                    await asyncio.sleep(0.5) # Prevent flooding
+    async def _fetch_initial_history(self):
+        """Fetches the initial 250 candles for all pairs on startup."""
+        logger.info("Fetching initial 250 candles for all pairs from Tiingo...")
+        results = await tiingo_client.fetch_multiple_tiingo_candles(self.pairs, "1m", 250)
+        
+        for pair, candles in results.items():
+            if candles:
+                self.candles_history[pair] = candles
+                logger.info(f"Loaded {len(candles)} historical candles for {pair}")
+            else:
+                logger.error(f"Failed to load historical candles for {pair}")
 
-                # Start listening to messages
-                await self.receive_messages()
-        except Exception as e:
-            logger.error(f"WebSocket Connection error: {e}")
-            self.running = False
-            
-    async def receive_messages(self):
+    async def _polling_loop(self):
+        """Main loop that polls Tiingo every 60 seconds."""
         while self.running:
-            try:
-                # Add a timeout so it doesn't hang forever if the connection silently drops
-                message = await asyncio.wait_for(self.websocket.recv(), timeout=60.0)
-                data = json.loads(message)
+            # Sleep until the next minute boundary (approximate)
+            now = datetime.now()
+            seconds_until_next_minute = 60 - now.second
+            await asyncio.sleep(seconds_until_next_minute)
+            
+            if not self.running:
+                break
                 
-                # Check for errors
-                if "error" in data:
-                    logger.error(f"Error from Deriv API: {data['error']['message']}")
-                    req = data.get("echo_req", {})
-                    pair = req.get("ticks_history") or req.get("ticks")
-                    if pair and ("invalid" in data["error"]["message"].lower() or data["error"].get("code") == "InvalidSymbol"):
-                        logger.warning(f"{pair} marked for Tiingo Fallback.")
-                        self.tiingo_fallback_pairs.add(pair)
-                        self.start_tiingo_poller()
+            logger.debug("Polling Tiingo for 1m candles (Bulk Request)...")
+            
+            # Fetch the latest 2 candles for all pairs (to ensure we capture the completed one)
+            # A bulk request takes only 1 API credit for all 6 pairs
+            results = await tiingo_client.fetch_multiple_tiingo_candles(self.pairs, "1m", 2)
+            
+            for pair, candles in results.items():
+                if not candles:
                     continue
-
-                # Identify which pair this message belongs to
-                pair = data.get("echo_req", {}).get("ticks_history")
-                if not pair or pair not in self.pairs:
-                    continue
-
-                # Case 1: Initial list of historical candles
-                if "candles" in data:
-                    logger.info(f"Received historical candles for {pair} ({len(data['candles'])} candles)")
-                    self.candles_history[pair] = data["candles"]
+                    
+                # Get the newly completed candle (the one before the currently forming one)
+                # Or just append any new candles based on epoch
+                history = self.candles_history[pair]
                 
-                # Case 2: Real-time active candle update (Deriv pushes OHLC subscription updates)
-                elif "ohlc" in data:
-                    ohlc = data["ohlc"]
-                    # Format string values to floats/ints to match the historical candles structure
-                    # We use 'open_time' as the epoch because 'epoch' in real-time push represents the tick time, not the candle start time.
-                    candle = {
-                        "open": float(ohlc["open"]),
-                        "high": float(ohlc["high"]),
-                        "low": float(ohlc["low"]),
-                        "close": float(ohlc["close"]),
-                        "epoch": int(ohlc["open_time"]),
-                        "volume": float(ohlc.get("volume", 1.0))
-                    }
-                    history = self.candles_history[pair]
-                    
-                    if not history:
-                        # If history is empty, initialize it
-                        history.append(candle)
-                        continue
-
-                    last_candle = history[-1]
-                    
-                    # If it's the same candle (matching epoch), update it
-                    if candle["epoch"] == last_candle["epoch"]:
-                        history[-1] = candle
-                    # If it's a new candle (newer epoch), append it
-                    elif candle["epoch"] > last_candle["epoch"]:
-                        logger.info(f"New 1m candle started for {pair}. Previous candle closed at {last_candle['close']}")
+                for c in candles:
+                    # Check if we already have this candle
+                    if not history or c['epoch'] > history[-1]['epoch']:
+                        history.append(c)
                         
-                        # Append the new open candle
-                        history.append(candle)
-                        
-                        # Keep history size clean (250 is enough for all strategies)
+                        # Keep history size clean
                         if len(history) > 250:
                             history.pop(0)
-                        
-                        # Invoke callback: A candle has just completed!
-                        # The completed candle is now history[-2] (the second to last)
-                        if self.callback:
-                            # Run async callback
-                            asyncio.create_task(self.callback(pair, history, source="deriv"))
                             
-            except asyncio.TimeoutError:
-                logger.warning("Deriv WebSocket silent timeout (60s without data). Reconnecting...")
-                break
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("Deriv WebSocket connection closed. Reconnecting...")
-                break
-            except Exception as e:
-                logger.error(f"Error parsing WebSocket message: {e}")
-                await asyncio.sleep(1)
-
-    def start_tiingo_poller(self):
-        if self.tiingo_task is None or self.tiingo_task.done():
-            self.tiingo_task = asyncio.create_task(self.tiingo_polling_loop())
-
-    async def tiingo_polling_loop(self):
-        logger.info("Started Tiingo fallback polling loop.")
-        while self.running:
-            for pair in list(self.tiingo_fallback_pairs):
-                try:
-                    logger.debug(f"Polling Tiingo for {pair} 1m candles...")
-                    # 1m candles are fetched fresh, not cached
-                    candles = await tiingo_client.fetch_tiingo_candles_cached(pair, "1m", 250)
-                    if candles and self.callback:
-                        asyncio.create_task(self.callback(pair, candles, source="tiingo"))
-                except Exception as e:
-                    logger.error(f"Error polling Tiingo for {pair}: {e}")
-            await asyncio.sleep(60) # Poll every 1 minute
+                        # If callback is registered, trigger it with the updated history
+                        if self.callback:
+                            # We pass the history up to the completed candle (which is the new one added)
+                            # Actually, Tiingo's newest candle might be forming, so we pass the whole list
+                            asyncio.create_task(self.callback(pair, list(history), source="tiingo"))
+                            
+            # Add a small buffer sleep so we don't double-fire in the same second
+            await asyncio.sleep(1)
 
     async def run(self):
-        while True:
-            await self.connect_and_subscribe()
-            logger.info("Retrying connection in 5 seconds...")
-            await asyncio.sleep(5)
+        self.running = True
+        logger.info("Starting Tiingo Primary Data Feed...")
+        
+        # 1. Fetch initial history
+        await self._fetch_initial_history()
+        
+        # 2. Start polling loop
+        await self._polling_loop()
 
-async def fetch_1m_candles(pair: str, count: int = 5) -> list:
-    """
-    Performs a one-shot WebSocket request to fetch historical 1-minute candles.
-    """
-    logger.info(f"Fetching {count} 1m candles for {pair}...")
-    try:
-        async with websockets.connect(config.DERIV_WS_URL) as ws:
-            if getattr(config, 'DERIV_TOKEN', ""):
-                await ws.send(json.dumps({"authorize": config.DERIV_TOKEN}))
-                await ws.recv()  # consume auth response
-                
-            request = {
-                "ticks_history": pair,
-                "adjust_start_time": 1,
-                "count": count,
-                "end": "latest",
-                "start": 1,
-                "style": "candles",
-                "granularity": 60  # 1 minute in seconds
-            }
-            await ws.send(json.dumps(request))
-            response = await ws.recv()
-            data = json.loads(response)
-            
-            if "error" in data:
-                logger.error(f"Error fetching 1m candles: {data['error']['message']}")
-                return []
-                
-            return data.get("candles", [])
-    except Exception as e:
-        logger.error(f"Failed to fetch 1m candles: {e}")
-        return []
-
-async def fetch_5m_candles(pair: str, count: int = 50) -> list:
-    """
-    Performs a one-shot WebSocket request to fetch historical 5-minute candles.
-    Used for Strategy 1.
-    """
-    logger.info(f"Fetching {count} 5m candles for {pair}...")
-    try:
-        async with websockets.connect(config.DERIV_WS_URL) as ws:
-            if getattr(config, 'DERIV_TOKEN', ""):
-                await ws.send(json.dumps({"authorize": config.DERIV_TOKEN}))
-                await ws.recv()
-                
-            request = {
-                "ticks_history": pair,
-                "adjust_start_time": 1,
-                "count": count,
-                "end": "latest",
-                "start": 1,
-                "style": "candles",
-                "granularity": 300  # 5 minutes in seconds
-            }
-            await ws.send(json.dumps(request))
-            response = await ws.recv()
-            data = json.loads(response)
-            
-            if "error" in data:
-                logger.error(f"Error fetching 5m candles: {data['error']['message']}")
-                return []
-                
-            return data.get("candles", [])
-    except Exception as e:
-        logger.error(f"Failed to fetch 5m candles: {e}")
-        return []
-
-async def fetch_m15_candles(pair: str, count: int = 250) -> list:
-    """
-    Performs a one-shot WebSocket request to fetch historical 15-minute candles.
-    Used for M15 Trend Filter (EMA 50 vs EMA 200).
-    """
-    logger.info(f"Fetching {count} M15 candles for {pair}...")
-    try:
-        async with websockets.connect(config.DERIV_WS_URL) as ws:
-            if getattr(config, 'DERIV_TOKEN', ""):
-                await ws.send(json.dumps({"authorize": config.DERIV_TOKEN}))
-                await ws.recv()
-                
-            request = {
-                "ticks_history": pair,
-                "adjust_start_time": 1,
-                "count": count,
-                "end": "latest",
-                "start": 1,
-                "style": "candles",
-                "granularity": 900  # 15 minutes in seconds
-            }
-            await ws.send(json.dumps(request))
-            response = await ws.recv()
-            data = json.loads(response)
-            
-            if "error" in data:
-                logger.error(f"Error fetching M15 candles: {data['error']['message']}")
-                return []
-                
-            return data.get("candles", [])
-    except Exception as e:
-        logger.error(f"Failed to fetch M15 candles: {e}")
-        return []
+    async def stop(self):
+        self.running = False
+        logger.info("Stopping Tiingo Data Feed...")

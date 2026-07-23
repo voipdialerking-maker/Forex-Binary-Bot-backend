@@ -12,9 +12,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import config
 import database
 import notifier
-from data_feed import DerivDataFeed, fetch_1m_candles, fetch_5m_candles, fetch_m15_candles
 from indicators import calculate_all_indicators
 from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy
+from data_feed import TiingoDataFeed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Main")
@@ -32,7 +32,7 @@ def format_pair_display(pair: str) -> str:
         return f"{pair[3:6]}/{pair[6:]}"
     return pair
 
-async def handle_candle_completed(pair: str, candle_history: list, source: str = "deriv"):
+async def handle_candle_completed(pair: str, candle_history: list, source: str = "tiingo"):
     """
     Callback triggered when a 1-minute candle closes.
     """
@@ -62,13 +62,9 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
         current_minute = datetime.now(timezone.utc).minute
 
         # Set up dynamic fetchers based on data source
-        if source == "tiingo":
-            from tiingo_client import fetch_tiingo_candles_cached
-            fetch_5m = lambda p, count=50: fetch_tiingo_candles_cached(p, "5m", count)
-            fetch_m15 = lambda p, count=250: fetch_tiingo_candles_cached(p, "15m", count)
-        else:
-            fetch_5m = fetch_5m_candles
-            fetch_m15 = fetch_m15_candles
+        from tiingo_client import fetch_tiingo_candles_cached
+        fetch_5m = lambda p, count=50: fetch_tiingo_candles_cached(p, "5m", count)
+        fetch_m15 = lambda p, count=250: fetch_tiingo_candles_cached(p, "15m", count)
 
         # -------------------------------------------------------------
         # Evaluate Strategy 1 (Trend Exhaustion) ONLY every 5th minute
@@ -98,11 +94,7 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
             signal_data = check_sma_smc_strategy(candles_m15_sma, candles_1m_sma)
             
         if not signal_data:
-            if source == "tiingo":
-                logger.info(f"[{format_pair_display(pair)}] Skipping Strategy 4 (VSA Scalping) because Tiingo lacks volume data.")
-            else:
-                # We already have 200 1m candles fetched above if we reached here
-                signal_data = check_vsa_scalp_strategy(candles_1m_sma)
+            logger.info(f"[{format_pair_display(pair)}] Skipping Strategy 4 (VSA Scalping) because Tiingo lacks volume data.")
 
         if signal_data:
             direction = signal_data["signal"]
@@ -161,7 +153,7 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
             if signal_id:
                 # Add to active signals tracker to evaluate outcome after 5 minutes (next candle close)
                 # Expiry epoch is current candle epoch + 300 seconds (5 mins)
-                expiry_epoch = int(result["epoch"]) + 300
+                expiry_epoch = completed_epoch + 300
                 active_signals_tracker[pair].append({
                     "id": signal_id,
                     "type": direction,
