@@ -492,8 +492,7 @@ def check_vsa_scalp_strategy(candles_1m: list) -> dict:
         logger.info(f"VSA SCALP DETECTED: {signal} [{vsa_type}] @ {close_p}")
         return {
             "pair": None,
-            "direction": signal,
-            "signal": "VSA_SCALP_REVERSAL",
+            "signal": signal, # This needs to be CALL or PUT for main.py to read it correctly
             "entry_price": close_p,
             "rsi": rsi,
             "stochastic": None,
