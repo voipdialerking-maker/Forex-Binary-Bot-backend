@@ -11,6 +11,9 @@ logger = logging.getLogger("TVClient")
 # Structure: { "pair": { "5m": {"data": [], "last_fetched": timestamp}, ... } }
 _CACHE = {}
 
+# Global Lock to prevent concurrent access to the non-thread-safe tvDatafeed websocket
+tv_lock = asyncio.Lock()
+
 # Initialize tvDatafeed (without login)
 try:
     tv = TvDatafeed()
@@ -50,12 +53,24 @@ async def fetch_multiple_tv_candles(pairs: list, interval: str, count: int) -> d
             # tvDatafeed uses synchronous requests, so we wrap it in a thread
             # Try OANDA first, if it fails try FXCM
             def fetch_data():
-                df = tv.get_hist(symbol=symbol, exchange='OANDA', interval=tv_interval, n_bars=count)
-                if df is None or df.empty:
-                    df = tv.get_hist(symbol=symbol, exchange='FXCM', interval=tv_interval, n_bars=count)
-                return df
+                global tv
+                if tv is None:
+                    tv = TvDatafeed()
+                
+                try:
+                    df = tv.get_hist(symbol=symbol, exchange='OANDA', interval=tv_interval, n_bars=count)
+                    if df is None or df.empty:
+                        df = tv.get_hist(symbol=symbol, exchange='FXCM', interval=tv_interval, n_bars=count)
+                    time.sleep(0.5)  # Small delay to prevent spamming TV servers
+                    return df
+                except Exception as e:
+                    logger.error(f"TV Error inside thread for {symbol}: {e}")
+                    # Re-initialize on next run if connection drops
+                    tv = None
+                    return None
 
-            df = await asyncio.to_thread(fetch_data)
+            async with tv_lock:
+                df = await asyncio.to_thread(fetch_data)
             
             if df is not None and not df.empty:
                 # Format to match our OHLC format
