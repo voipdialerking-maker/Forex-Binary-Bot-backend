@@ -225,12 +225,22 @@ async def database_cleanup_scheduler():
         # Sleep for 24 hours
         await asyncio.sleep(24 * 3600)
 
+from tiingo_ws import LATEST_PRICES, tiingo_websocket_loop
+
 class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        # Handle CORS
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        self.wfile.write(b'{"status": "ok", "message": "Quantum Bot Backend is running"}')
+        
+        if self.path == "/api/prices":
+            import json
+            self.wfile.write(json.dumps(LATEST_PRICES).encode('utf-8'))
+        else:
+            self.wfile.write(b'{"status": "ok", "message": "Quantum Bot Backend is running"}')
+            
     def log_message(self, format, *args):
         # Suppress request logs to keep terminal output clean
         return
@@ -283,6 +293,9 @@ async def main():
 
     # 3. Start the database cleanup scheduler in the background
     asyncio.create_task(database_cleanup_scheduler())
+    
+    # 3.5 Start the Tiingo WebSocket loop to maintain live prices in memory
+    asyncio.create_task(tiingo_websocket_loop())
 
     # 4. Initialize and run the TradingView Data Feed
     feed = TVDataFeed(pairs=config.MONITORED_PAIRS, callback=handle_candle_completed)
