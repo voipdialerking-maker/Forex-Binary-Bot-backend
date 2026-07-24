@@ -14,7 +14,7 @@ import database
 import notifier
 from indicators import calculate_all_indicators
 from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy
-from data_feed import TiingoDataFeed
+from data_feed import TVDataFeed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Main")
@@ -32,7 +32,7 @@ def format_pair_display(pair: str) -> str:
         return f"{pair[3:6]}/{pair[6:]}"
     return pair
 
-async def handle_candle_completed(pair: str, candle_history: list, source: str = "tiingo"):
+async def handle_candle_completed(pair: str, candle_history: list, source: str = "tradingview"):
     """
     Callback triggered when a 1-minute candle closes.
     """
@@ -62,9 +62,9 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
         current_minute = datetime.now(timezone.utc).minute
 
         # Set up dynamic fetchers based on data source
-        from tiingo_client import fetch_tiingo_candles_cached
-        fetch_5m = lambda p, count=50: fetch_tiingo_candles_cached(p, "5m", count)
-        fetch_m15 = lambda p, count=250: fetch_tiingo_candles_cached(p, "15m", count)
+        from tv_client import fetch_tv_candles_cached
+        fetch_5m = lambda p, count=50: fetch_tv_candles_cached(p, "5m", count)
+        fetch_m15 = lambda p, count=250: fetch_tv_candles_cached(p, "15m", count)
 
         # -------------------------------------------------------------
         # Evaluate Strategy 1 (Trend Exhaustion) ONLY every 5th minute
@@ -94,7 +94,8 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
             signal_data = check_sma_smc_strategy(candles_m15_sma, candles_1m_sma)
             
         if not signal_data:
-            logger.info(f"[{format_pair_display(pair)}] Skipping Strategy 4 (VSA Scalping) because Tiingo lacks volume data.")
+            # We already have the 1m history with volume from TradingView
+            signal_data = check_vsa_scalp_strategy(candle_history)
 
         if signal_data:
             direction = signal_data["signal"]
@@ -283,8 +284,8 @@ async def main():
     # 3. Start the database cleanup scheduler in the background
     asyncio.create_task(database_cleanup_scheduler())
 
-    # 4. Initialize and run the Tiingo Data Feed
-    feed = TiingoDataFeed(pairs=config.MONITORED_PAIRS, callback=handle_candle_completed)
+    # 4. Initialize and run the TradingView Data Feed
+    feed = TVDataFeed(pairs=config.MONITORED_PAIRS, callback=handle_candle_completed)
     await feed.run()
 
 if __name__ == "__main__":
