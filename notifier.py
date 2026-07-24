@@ -26,9 +26,9 @@ def send_telegram_signal(pair_display: str, direction: str, entry_price: float, 
         f"<b>Strategy:</b> {strategy}\n"
         f"<b>Entry Price:</b> {entry_price:.5f}\n\n"
         f"<b>Indicators at Setup:</b>\n"
-        f"• RSI (14): {rsi:.2f}\n"
-        f"• Stochastic K (14): {stochastic:.2f}\n"
-        f"• Volume Multiplier: {volume:.2f}x\n\n"
+        f"• RSI (14): {f'{rsi:.2f}' if rsi is not None else 'N/A'}\n"
+        f"• Stochastic K (14): {f'{stochastic:.2f}' if stochastic is not None else 'N/A'}\n"
+        f"• Volume Multiplier: {f'{volume:.2f}x' if volume is not None else 'N/A'}\n\n"
         f"⚠️ <i>Please trade on your Demo account first. Always follow strict risk management.</i>"
     )
 
