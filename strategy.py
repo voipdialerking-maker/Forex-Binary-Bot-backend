@@ -458,33 +458,46 @@ def check_vsa_scalp_strategy(candles_1m: list) -> dict:
     signal = None
     vsa_type = ""
     
+    # 0. Valid Move (Trend Continuation)
+    if vol_ratio >= 1.5 and (spread > 0 and body / spread >= 0.7) and spread > avg_spread:
+        if is_green and close_p > sma20:
+            signal = "CALL"
+            vsa_type = "VSA (Valid Move)"
+        elif is_red and close_p < sma20:
+            signal = "PUT"
+            vsa_type = "VSA (Valid Move)"
+            
     # 1. Effort without Result (Squat Bar / Absorption)
-    if vol_ratio >= 1.5 and (is_narrow_spread or (body / spread < 0.4)):
-        if is_green and (high_p >= bb_upper or rsi > 65):
+    if not signal and vol_ratio >= 1.5 and (is_narrow_spread or (body / spread < 0.4)):
+        if is_green and high_p >= bb_upper and rsi > 65:
             signal = "PUT"
             vsa_type = "VSA (Absorption/Squat)"
-        elif is_red and (low_p <= bb_lower or rsi < 35):
+        elif is_red and low_p <= bb_lower and rsi < 35:
             signal = "CALL"
             vsa_type = "VSA (Absorption/Squat)"
             
     # 2. No Demand (Lack of Buyers)
     if not signal and is_green and vol_ratio < 0.75 and is_narrow_spread:
-        if close_p < sma20 or rsi > 50:
+        reject_bb = (high_p >= bb_upper * 0.999)
+        reject_sma = (high_p >= sma20 and close_p < sma20)
+        if (reject_bb or reject_sma) and rsi > 55:
             signal = "PUT"
             vsa_type = "VSA (No Demand)"
             
     # 3. No Supply (Lack of Sellers)
     if not signal and is_red and vol_ratio < 0.75 and is_narrow_spread:
-        if close_p > sma20 or rsi < 50:
+        reject_bb = (low_p <= bb_lower * 1.001)
+        reject_sma = (low_p <= sma20 and close_p > sma20)
+        if (reject_bb or reject_sma) and rsi < 45:
             signal = "CALL"
             vsa_type = "VSA (No Supply)"
             
     # 4. Stopping Volume (Climax Rejection)
     if not signal and vol_ratio >= 2.0:
-        if lower_shadow >= 2 * body and lower_shadow >= (0.4 * spread) and low_p <= bb_lower:
+        if lower_shadow >= 2 * body and lower_shadow >= (0.4 * spread) and low_p <= bb_lower and rsi < 35:
             signal = "CALL"
             vsa_type = "VSA (Stopping Volume)"
-        elif upper_shadow >= 2 * body and upper_shadow >= (0.4 * spread) and high_p >= bb_upper:
+        elif upper_shadow >= 2 * body and upper_shadow >= (0.4 * spread) and high_p >= bb_upper and rsi > 65:
             signal = "PUT"
             vsa_type = "VSA (Stopping Volume)"
             
