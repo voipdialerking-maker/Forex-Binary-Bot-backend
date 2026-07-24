@@ -399,22 +399,23 @@ def validate_1m_exhaustion(candles_1m: list, direction: str) -> bool:
 
 def check_vsa_scalp_strategy(candles_1m: list) -> dict:
     """
-    Evaluates Strategy 4: Advanced VSA Scalp (Effort/Result, No Demand/Supply, Stopping Volume).
+    Evaluates Strategy 4: Trend Pullback VSA (The Master Setup).
+    Focuses on Strong Trend (SMA 9 and SMA 21 gap) + Low Volume Pullback to SMA.
     """
     if len(candles_1m) < 30:
         return None
         
     import pandas as pd
-    from indicators import calculate_bollinger_bands, calculate_rsi, calculate_volume_metrics, calculate_sma
+    from indicators import calculate_sma, calculate_volume_metrics
     
     df = pd.DataFrame(candles_1m)
     for col in ['open', 'high', 'low', 'close', 'volume']:
         df[col] = pd.to_numeric(df.get(col, 1.0))
         
-    df = calculate_bollinger_bands(df, 20, 2.0)
-    df = calculate_rsi(df, 14) 
+    # We need SMA 9 and SMA 21 for the Master Setup
+    df = calculate_sma(df, 9)
+    df = calculate_sma(df, 21)
     df = calculate_volume_metrics(df, 20)
-    df = calculate_sma(df, 20)
     
     if len(df) < 22:
         return None
@@ -432,82 +433,76 @@ def check_vsa_scalp_strategy(candles_1m: list) -> dict:
     
     vol_ratio = float(c.get('volume_ratio', 1.0))
     vol = float(c.get('volume', 1.0))
-    rsi = float(c.get('rsi', 50.0))
-    bb_upper = float(c.get('bb_upper', high_p))
-    bb_lower = float(c.get('bb_lower', low_p))
-    sma20 = float(c.get('sma_20', close_p))
+    
+    sma9 = float(c.get('sma_9', close_p))
+    sma21 = float(c.get('sma_21', close_p))
     
     spread = high_p - low_p
     body = abs(close_p - open_p)
-    upper_shadow = high_p - max(open_p, close_p)
-    lower_shadow = min(open_p, close_p) - low_p
     
     if spread == 0:
         return None
         
-    is_green = close_p > open_p
-    is_red = close_p < open_p
-    
     # Calculate average spread over last 20 candles
     avg_spread = (df['high'].iloc[-22:-2] - df['low'].iloc[-22:-2]).mean()
     if pd.isna(avg_spread) or avg_spread == 0:
         avg_spread = 0.0001
         
-    is_narrow_spread = spread < (avg_spread * 0.8)
+    # Minimum gap requirement (50% of an average candle)
+    min_gap = avg_spread * 0.5
+    gap = abs(sma9 - sma21)
     
     signal = None
     vsa_type = ""
     
-    # 0. Valid Move (Trend Continuation)
-    if vol_ratio >= 1.5 and (spread > 0 and body / spread >= 0.7) and spread > avg_spread:
-        if is_green and close_p > sma20:
-            signal = "CALL"
-            vsa_type = "VSA (Valid Move)"
-        elif is_red and close_p < sma20:
-            signal = "PUT"
-            vsa_type = "VSA (Valid Move)"
-            
-    # 1. Effort without Result (Squat Bar / Absorption)
-    if not signal and vol_ratio >= 1.5 and (is_narrow_spread or (body / spread < 0.4)):
-        if is_green and high_p >= bb_upper and rsi > 65:
-            signal = "PUT"
-            vsa_type = "VSA (Absorption/Squat)"
-        elif is_red and low_p <= bb_lower and rsi < 35:
-            signal = "CALL"
-            vsa_type = "VSA (Absorption/Squat)"
-            
-    # 2. No Demand (Lack of Buyers)
-    if not signal and is_green and vol_ratio < 0.75 and is_narrow_spread:
-        reject_bb = (high_p >= bb_upper * 0.999)
-        reject_sma = (high_p >= sma20 and close_p < sma20)
-        if (reject_bb or reject_sma) and rsi > 55:
-            signal = "PUT"
-            vsa_type = "VSA (No Demand)"
-            
-    # 3. No Supply (Lack of Sellers)
-    if not signal and is_red and vol_ratio < 0.75 and is_narrow_spread:
-        reject_bb = (low_p <= bb_lower * 1.001)
-        reject_sma = (low_p <= sma20 and close_p > sma20)
-        if (reject_bb or reject_sma) and rsi < 45:
-            signal = "CALL"
-            vsa_type = "VSA (No Supply)"
-            
-    # 4. Stopping Volume (Climax Rejection)
-    if not signal and vol_ratio >= 2.0:
-        if lower_shadow >= 2 * body and lower_shadow >= (0.4 * spread) and low_p <= bb_lower and rsi < 35:
-            signal = "CALL"
-            vsa_type = "VSA (Stopping Volume)"
-        elif upper_shadow >= 2 * body and upper_shadow >= (0.4 * spread) and high_p >= bb_upper and rsi > 65:
-            signal = "PUT"
-            vsa_type = "VSA (Stopping Volume)"
-            
+    # Check if we have a Strong Trend
+    if gap >= min_gap:
+        
+        # SCENARIO A: STRONG UPTREND
+        if sma9 > sma21 and close_p > sma21:
+            # Did it pull back to touch SMA 9 or SMA 21?
+            if low_p <= sma9 or low_p <= sma21:
+                # Body must close above SMA 21 (Support holds)
+                if min(open_p, close_p) > sma21:
+                    
+                    # Volume Filter 1: No Supply (Low Volume)
+                    if vol_ratio <= 0.85:
+                        signal = "CALL"
+                        vsa_type = "VSA (Uptrend Pullback - No Supply)"
+                        
+                    # Volume Filter 2: Absorption (High Volume + Rejection Wick)
+                    elif vol_ratio >= 1.5:
+                        lower_shadow = min(open_p, close_p) - low_p
+                        if lower_shadow > body and lower_shadow > (0.3 * spread):
+                            signal = "CALL"
+                            vsa_type = "VSA (Uptrend Pullback - Absorption)"
+                            
+        # SCENARIO B: STRONG DOWNTREND
+        elif sma9 < sma21 and close_p < sma21:
+            # Did it pull back to touch SMA 9 or SMA 21?
+            if high_p >= sma9 or high_p >= sma21:
+                # Body must close below SMA 21 (Resistance holds)
+                if max(open_p, close_p) < sma21:
+                    
+                    # Volume Filter 1: No Demand (Low Volume)
+                    if vol_ratio <= 0.85:
+                        signal = "PUT"
+                        vsa_type = "VSA (Downtrend Pullback - No Demand)"
+                        
+                    # Volume Filter 2: Absorption (High Volume + Rejection Wick)
+                    elif vol_ratio >= 1.5:
+                        upper_shadow = high_p - max(open_p, close_p)
+                        if upper_shadow > body and upper_shadow > (0.3 * spread):
+                            signal = "PUT"
+                            vsa_type = "VSA (Downtrend Pullback - Absorption)"
+
     if signal:
-        logger.info(f"VSA SCALP DETECTED: {signal} [{vsa_type}] @ {close_p}")
+        logger.info(f"VSA SCALP DETECTED: {signal} [{vsa_type}] @ {close_p} | SMA Gap: {gap:.5f} (Req: {min_gap:.5f})")
         return {
             "pair": None,
-            "signal": signal, # This needs to be CALL or PUT for main.py to read it correctly
+            "signal": signal,
             "entry_price": close_p,
-            "rsi": rsi,
+            "rsi": None,
             "stochastic": None,
             "volume_ratio": vol_ratio,
             "volume": vol,
