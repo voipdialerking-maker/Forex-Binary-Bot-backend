@@ -399,84 +399,108 @@ def validate_1m_exhaustion(candles_1m: list, direction: str) -> bool:
 
 def check_vsa_scalp_strategy(candles_1m: list) -> dict:
     """
-    Evaluates Strategy 4: VSA Scalp (Volume Climax + RSI + Price Action Confirmation).
-    Looks for a climax volume bar with extreme RSI, and waits for the NEXT candle to confirm the reversal.
+    Evaluates Strategy 4: Advanced VSA Scalp (Effort/Result, No Demand/Supply, Stopping Volume).
     """
     if len(candles_1m) < 30:
         return None
         
     import pandas as pd
-    from indicators import calculate_bollinger_bands, calculate_rsi, calculate_volume_metrics
+    from indicators import calculate_bollinger_bands, calculate_rsi, calculate_volume_metrics, calculate_sma
     
     df = pd.DataFrame(candles_1m)
     for col in ['open', 'high', 'low', 'close', 'volume']:
         df[col] = pd.to_numeric(df.get(col, 1.0))
         
     df = calculate_bollinger_bands(df, 20, 2.0)
-    df = calculate_rsi(df, 7) # RSI 7 for fast 1m scalping
+    df = calculate_rsi(df, 14) 
     df = calculate_volume_metrics(df, 20)
+    df = calculate_sma(df, 20)
     
-    if len(df) < 3:
+    if len(df) < 22:
         return None
         
-    # candles_1m[-1] is the forming candle, -2 is the completed confirmation, -3 is the climax
-    confirmation_candle = df.iloc[-2]
-    climax_candle = df.iloc[-3]
+    # We analyze the most recently COMPLETED 1m candle
+    c = df.iloc[-2]
     
     from strategy import is_valid_trading_session
-    c_epoch = int(confirmation_candle['epoch'])
+    c_epoch = int(c['epoch'])
     if not is_valid_trading_session(c_epoch):
         return None
         
-    conf_open = float(confirmation_candle['open'])
-    conf_close = float(confirmation_candle['close'])
+    open_p, close_p = float(c['open']), float(c['close'])
+    high_p, low_p = float(c['high']), float(c['low'])
     
-    climax_open = float(climax_candle['open'])
-    climax_close = float(climax_candle['close'])
-    climax_high = float(climax_candle['high'])
-    climax_low = float(climax_candle['low'])
+    vol_ratio = float(c.get('volume_ratio', 1.0))
+    vol = float(c.get('volume', 1.0))
+    rsi = float(c.get('rsi', 50.0))
+    bb_upper = float(c.get('bb_upper', high_p))
+    bb_lower = float(c.get('bb_lower', low_p))
+    sma20 = float(c.get('sma_20', close_p))
     
-    climax_volume_ratio = float(climax_candle['volume_ratio'])
-    climax_rsi = float(climax_candle['rsi'])
-    climax_bb_upper = float(climax_candle['bb_upper'])
-    climax_bb_lower = float(climax_candle['bb_lower'])
+    spread = high_p - low_p
+    body = abs(close_p - open_p)
+    upper_shadow = high_p - max(open_p, close_p)
+    lower_shadow = min(open_p, close_p) - low_p
     
-    # CALL (UP) Setup
-    is_climax_red = climax_close < climax_open
-    is_conf_green = conf_close > conf_open
+    if spread == 0:
+        return None
+        
+    is_green = close_p > open_p
+    is_red = close_p < open_p
     
-    if is_climax_red and climax_rsi < 25 and climax_volume_ratio >= 2.5 and climax_low <= climax_bb_lower:
-        if is_conf_green:
-            return {
-                "pair": None,
-                "direction": "CALL",
-                "signal": "VSA_SCALP_REVERSAL",
-                "entry_price": conf_close,
-                "rsi": climax_rsi,
-                "stochastic": None,
-                "volume_ratio": climax_volume_ratio,
-                "volume": float(climax_candle.get('volume', 1.0)),
-                "epoch": c_epoch,
-                "strategy_name": "VSA Scalp"
-            }
+    # Calculate average spread over last 20 candles
+    avg_spread = (df['high'].iloc[-22:-2] - df['low'].iloc[-22:-2]).mean()
+    if pd.isna(avg_spread) or avg_spread == 0:
+        avg_spread = 0.0001
+        
+    is_narrow_spread = spread < (avg_spread * 0.8)
+    
+    signal = None
+    vsa_type = ""
+    
+    # 1. Effort without Result (Squat Bar / Absorption)
+    if vol_ratio >= 1.5 and (is_narrow_spread or (body / spread < 0.4)):
+        if is_green and (high_p >= bb_upper or rsi > 65):
+            signal = "PUT"
+            vsa_type = "VSA (Absorption/Squat)"
+        elif is_red and (low_p <= bb_lower or rsi < 35):
+            signal = "CALL"
+            vsa_type = "VSA (Absorption/Squat)"
             
-    # PUT (DOWN) Setup
-    is_climax_green = climax_close > climax_open
-    is_conf_red = conf_close < conf_open
-    
-    if is_climax_green and climax_rsi > 75 and climax_volume_ratio >= 2.5 and climax_high >= climax_bb_upper:
-        if is_conf_red:
-            return {
-                "pair": None,
-                "direction": "PUT",
-                "signal": "VSA_SCALP_REVERSAL",
-                "entry_price": conf_close,
-                "rsi": climax_rsi,
-                "stochastic": None,
-                "volume_ratio": climax_volume_ratio,
-                "volume": float(climax_candle.get('volume', 1.0)),
-                "epoch": c_epoch,
-                "strategy_name": "VSA Scalp"
-            }
+    # 2. No Demand (Lack of Buyers)
+    if not signal and is_green and vol_ratio < 0.75 and is_narrow_spread:
+        if close_p < sma20 or rsi > 50:
+            signal = "PUT"
+            vsa_type = "VSA (No Demand)"
+            
+    # 3. No Supply (Lack of Sellers)
+    if not signal and is_red and vol_ratio < 0.75 and is_narrow_spread:
+        if close_p > sma20 or rsi < 50:
+            signal = "CALL"
+            vsa_type = "VSA (No Supply)"
+            
+    # 4. Stopping Volume (Climax Rejection)
+    if not signal and vol_ratio >= 2.0:
+        if lower_shadow >= 2 * body and lower_shadow >= (0.4 * spread) and low_p <= bb_lower:
+            signal = "CALL"
+            vsa_type = "VSA (Stopping Volume)"
+        elif upper_shadow >= 2 * body and upper_shadow >= (0.4 * spread) and high_p >= bb_upper:
+            signal = "PUT"
+            vsa_type = "VSA (Stopping Volume)"
+            
+    if signal:
+        logger.info(f"VSA SCALP DETECTED: {signal} [{vsa_type}] @ {close_p}")
+        return {
+            "pair": None,
+            "direction": signal,
+            "signal": "VSA_SCALP_REVERSAL",
+            "entry_price": close_p,
+            "rsi": rsi,
+            "stochastic": None,
+            "volume_ratio": vol_ratio,
+            "volume": vol,
+            "epoch": c_epoch,
+            "strategy_name": vsa_type
+        }
 
     return None
