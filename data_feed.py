@@ -54,15 +54,21 @@ class TVDataFeed:
                 history = self.candles_history[pair]
                 
                 for c in candles:
-                    # Check if we already have this candle
-                    if not history or c['epoch'] > history[-1]['epoch']:
+                    if not history:
+                        history.append(c)
+                    elif c['epoch'] == history[-1]['epoch']:
+                        # Update the currently forming candle with its latest/final data
+                        history[-1] = c
+                    elif c['epoch'] > history[-1]['epoch']:
+                        # A new forming candle has arrived!
+                        # This guarantees that the previous candle (history[-1]) is now fully finalized.
                         history.append(c)
                         
                         # Keep history size clean
                         if len(history) > 250:
                             history.pop(0)
                             
-                        # If callback is registered, trigger it with the updated history
+                        # Trigger callback because a candle has completed (history[-2] is the finalized candle)
                         if self.callback:
                             asyncio.create_task(self.callback(pair, list(history), source="tradingview"))
                             
