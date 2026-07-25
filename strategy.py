@@ -397,31 +397,49 @@ def validate_1m_exhaustion(candles_1m: list, direction: str) -> bool:
             return False
     return False
 
-def check_vsa_scalp_strategy(candles_1m: list) -> dict:
+def check_vsa_scalp_strategy(candles_m15: list, candles_1m: list) -> dict:
     """
-    Evaluates Strategy 4: Trend Pullback VSA (The Master Setup).
-    Focuses on Strong Trend (SMA 9 and SMA 21 gap) + Low Volume Pullback to SMA.
+    Evaluates Strategy 4: SMC Support/Resistance + VSA (Wick Rejection).
+    Focuses on HTF (15M) Support/Resistance, Volume Spike, and Wick Rejection.
     """
-    if len(candles_1m) < 30:
+    if not candles_m15 or len(candles_m15) < 20 or not candles_1m or len(candles_1m) < 30:
         return None
         
     import pandas as pd
     from indicators import calculate_sma, calculate_volume_metrics
     
-    df = pd.DataFrame(candles_1m)
-    for col in ['open', 'high', 'low', 'close', 'volume']:
-        df[col] = pd.to_numeric(df.get(col, 1.0))
+    # --- 1. HIGHER TIMEFRAME (M15) ANALYSIS ---
+    df_m15 = pd.DataFrame(candles_m15)
+    for col in ['open', 'high', 'low', 'close']:
+        df_m15[col] = pd.to_numeric(df_m15.get(col, 1.0))
         
-    # We need SMA 9 and SMA 21 for the Master Setup
-    df = calculate_sma(df, 9)
-    df = calculate_sma(df, 21)
-    df = calculate_volume_metrics(df, 20)
+    df_m15 = calculate_sma(df_m15, 9)
+    df_m15 = calculate_sma(df_m15, 21)
     
-    if len(df) < 22:
-        return None
+    # Exclude the currently forming M15 candle for accurate SR marking
+    historical_m15 = df_m15.iloc[:-1]
+    last_m15 = historical_m15.iloc[-1]
+    
+    # M15 Trend
+    m15_sma9 = last_m15['sma_9']
+    m15_sma21 = last_m15['sma_21']
+    m15_uptrend = m15_sma9 > m15_sma21
+    m15_downtrend = m15_sma9 < m15_sma21
+    
+    # Mark Support & Resistance (recent 20 M15 candles)
+    recent_m15 = historical_m15.iloc[-20:]
+    m15_resistance = recent_m15['high'].max()
+    m15_support = recent_m15['low'].min()
+    
+    # --- 2. LOWER TIMEFRAME (M1) ANALYSIS ---
+    df_1m = pd.DataFrame(candles_1m)
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        df_1m[col] = pd.to_numeric(df_1m.get(col, 1.0))
         
+    df_1m = calculate_volume_metrics(df_1m, 10) # 10-candle average for volume spike
+    
     # We analyze the most recently COMPLETED 1m candle
-    c = df.iloc[-2]
+    c = df_1m.iloc[-2]
     
     from strategy import is_valid_trading_session
     c_epoch = int(c['epoch'])
@@ -430,74 +448,51 @@ def check_vsa_scalp_strategy(candles_1m: list) -> dict:
         
     open_p, close_p = float(c['open']), float(c['close'])
     high_p, low_p = float(c['high']), float(c['low'])
-    
     vol_ratio = float(c.get('volume_ratio', 1.0))
     vol = float(c.get('volume', 1.0))
     
-    sma9 = float(c.get('sma_9', close_p))
-    sma21 = float(c.get('sma_21', close_p))
-    
     spread = high_p - low_p
     body = abs(close_p - open_p)
+    upper_shadow = high_p - max(open_p, close_p)
+    lower_shadow = min(open_p, close_p) - low_p
     
     if spread == 0:
         return None
         
-    # Calculate average spread over last 20 candles
-    avg_spread = (df['high'].iloc[-22:-2] - df['low'].iloc[-22:-2]).mean()
-    if pd.isna(avg_spread) or avg_spread == 0:
-        avg_spread = 0.0001
-        
-    # Minimum gap requirement (50% of an average candle)
-    min_gap = avg_spread * 0.5
-    gap = abs(sma9 - sma21)
+    # Calculate M1 Average Spread for proximity threshold
+    avg_spread = (df_1m['high'].iloc[-22:-2] - df_1m['low'].iloc[-22:-2]).mean()
+    proximity_threshold = avg_spread * 1.5 # Must be within 1.5x of an average M1 candle to the M15 level
     
     signal = None
     vsa_type = ""
     
-    # Check if we have a Strong Trend
-    if gap >= min_gap:
-        
-        # SCENARIO A: STRONG UPTREND
-        if sma9 > sma21 and close_p > sma21:
-            # Did it pull back to touch SMA 9 or SMA 21?
-            if low_p <= sma9 or low_p <= sma21:
-                # Body must close above SMA 21 (Support holds)
-                if min(open_p, close_p) > sma21:
+    # Volume Spike Requirement: Must be > 1.25x the 10-period average
+    has_volume_spike = vol_ratio > 1.25
+    
+    # SCENARIO A: BUY (CALL) Setup at Support
+    if m15_uptrend:
+        # Check if price is near M15 Support
+        if low_p <= (m15_support + proximity_threshold):
+            # Check Wick Rejection (Hammer-like)
+            if has_volume_spike and lower_shadow >= (2 * body) and lower_shadow > upper_shadow:
+                # Body must close in the upper half of the candle
+                if close_p > (high_p + low_p) / 2:
+                    signal = "CALL"
+                    vsa_type = "SMC-VSA (Support Wick Rejection)"
                     
-                    # Volume Filter 1: No Supply (Low Volume)
-                    if vol_ratio <= 0.85:
-                        signal = "CALL"
-                        vsa_type = "VSA (Uptrend Pullback - No Supply)"
-                        
-                    # Volume Filter 2: Absorption (High Volume + Rejection Wick)
-                    elif vol_ratio >= 1.5:
-                        lower_shadow = min(open_p, close_p) - low_p
-                        if lower_shadow > body and lower_shadow > (0.3 * spread):
-                            signal = "CALL"
-                            vsa_type = "VSA (Uptrend Pullback - Absorption)"
-                            
-        # SCENARIO B: STRONG DOWNTREND
-        elif sma9 < sma21 and close_p < sma21:
-            # Did it pull back to touch SMA 9 or SMA 21?
-            if high_p >= sma9 or high_p >= sma21:
-                # Body must close below SMA 21 (Resistance holds)
-                if max(open_p, close_p) < sma21:
-                    
-                    # Volume Filter 1: No Demand (Low Volume)
-                    if vol_ratio <= 0.85:
-                        signal = "PUT"
-                        vsa_type = "VSA (Downtrend Pullback - No Demand)"
-                        
-                    # Volume Filter 2: Absorption (High Volume + Rejection Wick)
-                    elif vol_ratio >= 1.5:
-                        upper_shadow = high_p - max(open_p, close_p)
-                        if upper_shadow > body and upper_shadow > (0.3 * spread):
-                            signal = "PUT"
-                            vsa_type = "VSA (Downtrend Pullback - Absorption)"
+    # SCENARIO B: SELL (PUT) Setup at Resistance
+    if m15_downtrend and not signal:
+        # Check if price is near M15 Resistance
+        if high_p >= (m15_resistance - proximity_threshold):
+            # Check Wick Rejection (Shooting Star-like)
+            if has_volume_spike and upper_shadow >= (2 * body) and upper_shadow > lower_shadow:
+                # Body must close in the lower half of the candle
+                if close_p < (high_p + low_p) / 2:
+                    signal = "PUT"
+                    vsa_type = "SMC-VSA (Resistance Wick Rejection)"
 
     if signal:
-        logger.info(f"VSA SCALP DETECTED: {signal} [{vsa_type}] @ {close_p} | SMA Gap: {gap:.5f} (Req: {min_gap:.5f})")
+        logger.info(f"VSA SCALP DETECTED: {signal} [{vsa_type}] @ {close_p} | Vol Ratio: {vol_ratio:.2f}")
         return {
             "pair": None,
             "signal": signal,

@@ -95,7 +95,8 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
             
         if not signal_data:
             # We already have the 1m history with volume from TradingView
-            signal_data = check_vsa_scalp_strategy(candle_history)
+            candles_m15_vsa = await fetch_m15(pair, count=30)
+            signal_data = check_vsa_scalp_strategy(candles_m15_vsa, candle_history)
 
         if signal_data:
             direction = signal_data["signal"]
