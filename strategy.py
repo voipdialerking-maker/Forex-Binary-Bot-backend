@@ -584,16 +584,11 @@ def check_master_candle_strategy(candles_1m: list) -> dict:
     if not has_vol_spike:
         return None
         
-    # SETUP A: High Volume True Breakout
-    if close_p > mc_high and open_p <= mc_high and upper_shadow <= (0.3 * spread):
-        signal = "CALL"
-        strategy_name = "Master Candle (Breakout)"
-    elif close_p < mc_low and open_p >= mc_low and lower_shadow <= (0.3 * spread):
-        signal = "PUT"
-        strategy_name = "Master Candle (Breakout)"
+    # SETUP A: High Volume True Breakout [DISABLED due to low win rate on 1m chart]
+    # We only trade Trap / Wick Rejection setups which have 65%+ win rate.
         
     # SETUP B: High Volume Fakeout / Trap (Wick Rejection)
-    elif high_p > mc_high and close_p < mc_high and upper_shadow >= (2 * body):
+    if high_p > mc_high and close_p < mc_high and upper_shadow >= (2 * body):
         signal = "PUT"
         strategy_name = "Master Candle (Fakeout Rejection)"
     elif low_p < mc_low and close_p > mc_low and lower_shadow >= (2 * body):
