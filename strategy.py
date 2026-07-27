@@ -506,3 +506,113 @@ def check_vsa_scalp_strategy(candles_m15: list, candles_1m: list) -> dict:
         }
 
     return None
+
+def check_master_candle_strategy(candles_1m: list) -> dict:
+    """
+    Evaluates Strategy 5: Master Candle + Volume (Breakout & Fakeout Rejection).
+    1. Finds a Master Candle (mother candle engulfing 4+ consecutive candles).
+    2. Checks if the recently completed 1m candle broke out or rejected the MC range with a Volume Spike.
+    """
+    if not candles_1m or len(candles_1m) < 25:
+        return None
+        
+    import pandas as pd
+    from indicators import calculate_volume_metrics
+    
+    df_1m = pd.DataFrame(candles_1m)
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        df_1m[col] = pd.to_numeric(df_1m.get(col, 1.0))
+        
+    df_1m = calculate_volume_metrics(df_1m, 15)
+    
+    # Analyze the most recently COMPLETED 1m candle (-2)
+    c = df_1m.iloc[-2]
+    
+    from strategy import is_valid_trading_session
+    c_epoch = int(c['epoch'])
+    if not is_valid_trading_session(c_epoch):
+        return None
+        
+    avg_spread = (df_1m['high'].iloc[-22:-2] - df_1m['low'].iloc[-22:-2]).mean()
+    if pd.isna(avg_spread) or avg_spread == 0:
+        avg_spread = 0.0001
+        
+    # Search backwards for a valid Master Candle in the last 15 candles (index -16 to -6)
+    mc_high = None
+    mc_low = None
+    
+    for idx in range(len(df_1m) - 16, len(df_1m) - 6):
+        if idx < 0:
+            continue
+        cand = df_1m.iloc[idx]
+        c_high = float(cand['high'])
+        c_low = float(cand['low'])
+        
+        # Must have a decent spread
+        if (c_high - c_low) < (avg_spread * 1.1):
+            continue
+            
+        # Check if next 4 candles are inside c_high and c_low
+        inside_4 = df_1m.iloc[idx+1 : idx+5]
+        if len(inside_4) < 4:
+            continue
+            
+        if all(inside_4['high'] <= c_high) and all(inside_4['low'] >= c_low):
+            mc_high = c_high
+            mc_low = c_low
+            break
+            
+    if not mc_high or not mc_low:
+        return None
+        
+    open_p, close_p = float(c['open']), float(c['close'])
+    high_p, low_p = float(c['high']), float(c['low'])
+    vol_ratio = float(c.get('volume_ratio', 1.0))
+    vol = float(c.get('volume', 1.0))
+    
+    spread = high_p - low_p
+    body = abs(close_p - open_p)
+    upper_shadow = high_p - max(open_p, close_p)
+    lower_shadow = min(open_p, close_p) - low_p
+    
+    signal = None
+    strategy_name = ""
+    
+    # Must have a Volume Spike (> 1.35x average)
+    has_vol_spike = vol_ratio > 1.35
+    
+    if not has_vol_spike:
+        return None
+        
+    # SETUP A: High Volume True Breakout
+    if close_p > mc_high and open_p <= mc_high and upper_shadow <= (0.3 * spread):
+        signal = "CALL"
+        strategy_name = "Master Candle (Breakout)"
+    elif close_p < mc_low and open_p >= mc_low and lower_shadow <= (0.3 * spread):
+        signal = "PUT"
+        strategy_name = "Master Candle (Breakout)"
+        
+    # SETUP B: High Volume Fakeout / Trap (Wick Rejection)
+    elif high_p > mc_high and close_p < mc_high and upper_shadow >= (2 * body):
+        signal = "PUT"
+        strategy_name = "Master Candle (Fakeout Rejection)"
+    elif low_p < mc_low and close_p > mc_low and lower_shadow >= (2 * body):
+        signal = "CALL"
+        strategy_name = "Master Candle (Fakeout Rejection)"
+        
+    if signal:
+        logger.info(f"MASTER CANDLE SIGNAL: {signal} [{strategy_name}] @ {close_p} | MC Range: [{mc_low:.5f} - {mc_high:.5f}]")
+        return {
+            "pair": None,
+            "signal": signal,
+            "entry_price": close_p,
+            "rsi": None,
+            "stochastic": None,
+            "volume_ratio": vol_ratio,
+            "volume": vol,
+            "epoch": c_epoch,
+            "strategy_name": strategy_name
+        }
+        
+    return None
+

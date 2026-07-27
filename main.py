@@ -13,7 +13,7 @@ import config
 import database
 import notifier
 from indicators import calculate_all_indicators
-from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy
+from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy, check_master_candle_strategy
 from data_feed import TVDataFeed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -97,6 +97,10 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
             # We already have the 1m history with volume from TradingView
             candles_m15_vsa = await fetch_m15(pair, count=30)
             signal_data = check_vsa_scalp_strategy(candles_m15_vsa, candle_history)
+            
+        if not signal_data:
+            # Evaluate Strategy 5 (Master Candle Breakout / Fakeout Rejection)
+            signal_data = check_master_candle_strategy(candle_history)
 
         if signal_data:
             direction = signal_data["signal"]
