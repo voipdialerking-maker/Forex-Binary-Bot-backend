@@ -52,7 +52,6 @@ TIMEFRAME = "5m"  # 5 minutes
 
 # Session Config (UTC hours)
 # Pakistan Time (PKT) is UTC+5. 
-# Active Trading Window: London Open (07:00 UTC) to late NY session (17:00 UTC)
-# This covers 10 hours of the most active market period.
-SESSION_START_UTC = 7
-SESSION_END_UTC = 17
+# Active Trading Window: 24/5 Trading (All Sessions)
+SESSION_START_UTC = 0
+SESSION_END_UTC = 24
