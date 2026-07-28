@@ -677,16 +677,19 @@ def check_fractal_retest_strategy(candles_1m: list) -> dict:
             if right_lower_up:
                 f_high = h_i
                 for j in range(i+n, c_idx):
-                    if df['close'].iloc[j] > f_high: # Body close above f_high
+                    # Breakout candle j must be GREEN and body close above f_high
+                    if df['close'].iloc[j] > f_high and df['close'].iloc[j] > df['open'].iloc[j]:
                         if j + 1 <= c_idx - 1:
                             conf_close = df['close'].iloc[j+1]
                             conf_open = df['open'].iloc[j+1]
-                            if conf_close > conf_open: # Green confirmation candle
-                                # Check if already broken below or already tested between j+2 and c_idx-1
-                                broken = any(df['close'].iloc[k] < f_high for k in range(j+2, c_idx))
-                                tested = any(df['low'].iloc[k] <= (f_high * 1.00015) for k in range(j+2, c_idx))
-                                if not broken and not tested:
-                                    valid_support_levels.append(f_high)
+                            # Confirmation candle j+1 must be GREEN and close HIGHER than breakout close
+                            if conf_close > conf_open and conf_close > df['close'].iloc[j]:
+                                # Retest must occur within 30 candles of confirmed breakout
+                                if (c_idx - (j + 1)) <= 30:
+                                    broken = any(df['close'].iloc[k] < f_high for k in range(j+2, c_idx))
+                                    tested = any(df['low'].iloc[k] <= (f_high * 1.00015) for k in range(j+2, c_idx))
+                                    if not broken and not tested:
+                                        valid_support_levels.append(f_high)
                         break
                         
         # --- 2. CHECK DOWN FRACTAL (TradingView Williams Fractal n=10 Logic) ---
@@ -696,16 +699,19 @@ def check_fractal_retest_strategy(candles_1m: list) -> dict:
             if right_higher_down:
                 f_low = l_i
                 for j in range(i+n, c_idx):
-                    if df['close'].iloc[j] < f_low: # Body close below f_low
+                    # Breakdown candle j must be RED and body close below f_low
+                    if df['close'].iloc[j] < f_low and df['close'].iloc[j] < df['open'].iloc[j]:
                         if j + 1 <= c_idx - 1:
                             conf_close = df['close'].iloc[j+1]
                             conf_open = df['open'].iloc[j+1]
-                            if conf_close < conf_open: # Red confirmation candle
-                                # Check if already broken above or already tested between j+2 and c_idx-1
-                                broken = any(df['close'].iloc[k] > f_low for k in range(j+2, c_idx))
-                                tested = any(df['high'].iloc[k] >= (f_low * 0.99985) for k in range(j+2, c_idx))
-                                if not broken and not tested:
-                                    valid_resistance_levels.append(f_low)
+                            # Confirmation candle j+1 must be RED and close LOWER than breakdown close
+                            if conf_close < conf_open and conf_close < df['close'].iloc[j]:
+                                # Retest must occur within 30 candles of confirmed breakdown
+                                if (c_idx - (j + 1)) <= 30:
+                                    broken = any(df['close'].iloc[k] > f_low for k in range(j+2, c_idx))
+                                    tested = any(df['high'].iloc[k] >= (f_low * 0.99985) for k in range(j+2, c_idx))
+                                    if not broken and not tested:
+                                        valid_resistance_levels.append(f_low)
                         break
                     
     signal = None
