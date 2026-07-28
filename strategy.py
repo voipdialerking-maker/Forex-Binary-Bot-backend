@@ -629,9 +629,10 @@ def check_master_candle_strategy(candles_1m: list) -> dict:
 
 def check_fractal_retest_strategy(candles_1m: list) -> dict:
     """
-    Evaluates Strategy 6: Fractal 20 Breakout & Retest (Flip Level Strategy) on 1-Minute chart.
-    1. Finds 20-period Fractal Highs/Lows across the last 15 to 200 candles.
-    2. Checks if a candle broke the level with its BODY and if the NEXT candle confirmed in the same direction.
+    Evaluates Strategy 6: Fractal 10/20 Breakout & Retest (Flip Level Strategy) on 1-Minute chart.
+    1. Finds Williams Fractals (n=10, 10 before & 10 after, matching TradingView script exactly).
+    2. Checks if a candle broke the level with its BODY close (close > f_high / close < f_low)
+       and if the NEXT candle confirmed in the same direction (Green for CALL, Red for PUT).
        - If next candle is same direction -> VALID support/resistance flip level.
        - If next candle is opposite direction -> INVALIDATED.
     3. Triggers 5m BUY/SELL signal when price returns to RETEST a valid flip level.
@@ -656,77 +657,75 @@ def check_fractal_retest_strategy(candles_1m: list) -> dict:
     c_high = c_candle['high']
     c_low = c_candle['low']
     body = abs(c_close - c_open)
-    spread = c_high - c_low
     
-    # We will scan from index max(10, len(df)-200) up to len(df)-15 for 20-period fractals (10 before, 10 after)
+    # We scan from index max(10, len(df)-200) up to len(df)-15 for n=10 Williams Fractals
     start_idx = max(10, len(df) - 200)
     end_idx = len(df) - 15
+    n = 10
     
     valid_support_levels = []
     valid_resistance_levels = []
     
     for i in range(start_idx, end_idx):
-        window_highs = df['high'].iloc[i-10 : i+11]
-        window_lows = df['low'].iloc[i-10 : i+11]
+        h_i = df['high'].iloc[i]
+        l_i = df['low'].iloc[i]
         
-        # Check Bullish Fractal High (Potential Support Flip)
-        if df['high'].iloc[i] == window_highs.max():
-            f_high = df['high'].iloc[i]
-            # Search forward from i+10 to c_idx-1 for breakout + confirmation
-            for j in range(i+10, c_idx):
-                # Did candle j break f_high with its BODY?
-                if df['close'].iloc[j] > f_high and df['open'].iloc[j] <= f_high:
-                    if j + 1 <= c_idx - 1:
-                        # Check confirmation candle j+1
-                        conf_close = df['close'].iloc[j+1]
-                        conf_open = df['open'].iloc[j+1]
-                        if conf_close > conf_open and conf_close >= df['close'].iloc[j]:
-                            # Validated!
-                            valid_support_levels.append(f_high)
-                        else:
-                            # Invalidated by opposite candle
-                            pass
-                    break
-                    
-        # Check Bearish Fractal Low (Potential Resistance Flip)
-        if df['low'].iloc[i] == window_lows.min():
-            f_low = df['low'].iloc[i]
-            # Search forward from i+10 to c_idx-1 for breakdown + confirmation
-            for j in range(i+10, c_idx):
-                # Did candle j break f_low with its BODY?
-                if df['close'].iloc[j] < f_low and df['open'].iloc[j] >= f_low:
-                    if j + 1 <= c_idx - 1:
-                        # Check confirmation candle j+1
-                        conf_close = df['close'].iloc[j+1]
-                        conf_open = df['open'].iloc[j+1]
-                        if conf_close < conf_open and conf_close <= df['close'].iloc[j]:
-                            # Validated!
-                            valid_resistance_levels.append(f_low)
-                        else:
-                            # Invalidated by opposite candle
-                            pass
-                    break
+        # --- 1. CHECK UP FRACTAL (TradingView Williams Fractal n=10 Logic) ---
+        left_lower_up = all(df['high'].iloc[i-k] < h_i for k in range(1, n+1))
+        if left_lower_up:
+            # Check right frontier (allowing equal highs up to 4 bars as in PineScript)
+            right_lower_up = all(df['high'].iloc[i+k] < h_i for k in range(1, n+1))
+            if right_lower_up:
+                f_high = h_i
+                # Search forward from i+n to c_idx-1 for body close breakout + confirmation
+                for j in range(i+n, c_idx):
+                    if df['close'].iloc[j] > f_high: # Body close above f_high
+                        if j + 1 <= c_idx - 1:
+                            conf_close = df['close'].iloc[j+1]
+                            conf_open = df['open'].iloc[j+1]
+                            if conf_close > conf_open: # Green confirmation candle
+                                valid_support_levels.append(f_high)
+                            else:
+                                pass # Invalidated by opposite candle
+                        break
+                        
+        # --- 2. CHECK DOWN FRACTAL (TradingView Williams Fractal n=10 Logic) ---
+        left_higher_down = all(df['low'].iloc[i-k] > l_i for k in range(1, n+1))
+        if left_higher_down:
+            # Check right frontier
+            right_higher_down = all(df['low'].iloc[i+k] > l_i for k in range(1, n+1))
+            if right_higher_down:
+                f_low = l_i
+                # Search forward from i+n to c_idx-1 for body close breakdown + confirmation
+                for j in range(i+n, c_idx):
+                    if df['close'].iloc[j] < f_low: # Body close below f_low
+                        if j + 1 <= c_idx - 1:
+                            conf_close = df['close'].iloc[j+1]
+                            conf_open = df['open'].iloc[j+1]
+                            if conf_close < conf_open: # Red confirmation candle
+                                valid_resistance_levels.append(f_low)
+                            else:
+                                pass # Invalidated by opposite candle
+                        break
                     
     signal = None
     strategy_name = "Fractal 20 (Breakout & Retest)"
     
-    # Check if candle c_idx retests any Valid Support Level -> CALL
+    # Check if candle c_idx retests any Valid Support Level -> CALL (0.05% buffer zone)
     for sup in valid_support_levels:
-        # Retest condition: low touches or drops just near sup, and candle rejects upward
-        if c_low <= (sup * 1.0003) and c_close >= (sup * 0.9998):
+        if c_low <= (sup * 1.0005) and c_close >= (sup * 0.9995):
             if c_close > c_open or (min(c_open, c_close) - c_low) >= body:
                 signal = "CALL"
-                logger.info(f"FRACTAL 20 SUPPORT RETEST CALL @ {c_close} | Support Level: {sup:.5f}")
+                logger.info(f"FRACTAL 10 SUPPORT RETEST CALL @ {c_close} | Support Level: {sup:.5f}")
                 break
                 
-    # Check if candle c_idx retests any Valid Resistance Level -> PUT
+    # Check if candle c_idx retests any Valid Resistance Level -> PUT (0.05% buffer zone)
     if not signal:
         for res in valid_resistance_levels:
-            # Retest condition: high touches or rises just near res, and candle rejects downward
-            if c_high >= (res * 0.9997) and c_close <= (res * 1.0002):
+            if c_high >= (res * 0.9995) and c_close <= (res * 1.0005):
                 if c_close < c_open or (c_high - max(c_open, c_close)) >= body:
                     signal = "PUT"
-                    logger.info(f"FRACTAL 20 RESISTANCE RETEST PUT @ {c_close} | Resistance Level: {res:.5f}")
+                    logger.info(f"FRACTAL 10 RESISTANCE RETEST PUT @ {c_close} | Resistance Level: {res:.5f}")
                     break
                     
     if signal:
