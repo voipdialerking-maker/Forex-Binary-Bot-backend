@@ -400,10 +400,9 @@ def validate_1m_exhaustion(candles_1m: list, direction: str) -> bool:
 def check_vsa_scalp_strategy(candles_m15: list, candles_1m: list) -> dict:
     """
     Evaluates Strategy 4: SMC Support/Resistance + VSA (Wick Rejection).
-    Focuses on HTF (15M) Support/Resistance, Volume Spike, and Wick Rejection.
+    DISABLED: Low win rate in 1m binary scalping.
     """
-    if not candles_m15 or len(candles_m15) < 20 or not candles_1m or len(candles_1m) < 30:
-        return None
+    return None
         
     import pandas as pd
     from indicators import calculate_sma, calculate_volume_metrics
