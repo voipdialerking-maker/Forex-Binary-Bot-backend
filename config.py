@@ -51,7 +51,7 @@ DIVERGENCE_LOOKBACK = 10 # 5m candles to look back for RSI divergence
 TIMEFRAME = "5m"  # 5 minutes
 
 # Session Config (UTC hours)
-# Pakistan Time (PKT) is UTC+5. 
-# Active Trading Window: 24/5 Trading (All Sessions)
-SESSION_START_UTC = 0
-SESSION_END_UTC = 24
+# Active Institutional Forex Window: London & New York Sessions (07:00 to 19:00 UTC)
+# Avoids late US afternoon / Asian Rollover dead zone (19:00 to 07:00 UTC) where liquidity is low.
+SESSION_START_UTC = 7
+SESSION_END_UTC = 19
