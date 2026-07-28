@@ -81,14 +81,21 @@ def check_trend_exhaustion(df: pd.DataFrame) -> dict:
     macd_bullish = (macd_hist > prev_macd_hist) or (macd_hist > 0)
     macd_bearish = (macd_hist < prev_macd_hist) or (macd_hist < 0)
     
-    # Check potential CALL Condition
-    if (close < bb_lower) and (stoch_k < config.STOCH_OVERSOLD) and (rsi < config.RSI_OVERSOLD):
-        if volume_condition:
+    open_price = completed_candle['open']
+    high_price = completed_candle['high']
+    low_price = completed_candle['low']
+    body = abs(close - open_price)
+    lower_shadow = min(open_price, close) - low_price
+    upper_shadow = high_price - max(open_price, close)
+    
+    # Check potential CALL Condition (swept BB lower with rejection wick + oversold extreme)
+    if (low_price < bb_lower or close < bb_lower) and (stoch_k < config.STOCH_OVERSOLD) and (rsi < config.RSI_OVERSOLD):
+        if volume_condition and lower_shadow >= body:
             signal = "CALL"
 
-    # Check potential PUT Condition
-    elif (close > bb_upper) and (stoch_k > config.STOCH_OVERBOUGHT) and (rsi > config.RSI_OVERBOUGHT):
-        if volume_condition:
+    # Check potential PUT Condition (swept BB upper with rejection wick + overbought extreme)
+    elif (high_price > bb_upper or close > bb_upper) and (stoch_k > config.STOCH_OVERBOUGHT) and (rsi > config.RSI_OVERBOUGHT):
+        if volume_condition and upper_shadow >= body:
             signal = "PUT"
 
     if signal:
@@ -124,23 +131,33 @@ def check_smc_sweep(candles_m15: list, candles_1m: list) -> dict:
     
     completed_1m = candles_1m[-2]
     
+    c_open = float(completed_1m['open'])
     c_close = float(completed_1m['close'])
     c_high = float(completed_1m['high'])
     c_low = float(completed_1m['low'])
     c_epoch = int(completed_1m['epoch'])
+    vol_ratio = float(completed_1m.get('volume_ratio', 1.0))
+    
+    body = abs(c_close - c_open)
+    lower_shadow = min(c_open, c_close) - c_low
+    upper_shadow = c_high - max(c_open, c_close)
     
     if not is_valid_trading_session(c_epoch):
         return None
         
+    # Must have institutional Volume Spike (> 1.25x average) on the sweep candle
+    if vol_ratio < 1.25:
+        return None
+        
     signal = None
     
-    # CALL Setup: Swept the M15 Low, but closed back inside with a bullish pattern
-    if c_low < lowest_low and c_close > lowest_low:
+    # CALL Setup: Swept the M15 Low, but closed back inside with strong rejection wick
+    if c_low < lowest_low and c_close > lowest_low and lower_shadow >= (1.5 * body):
         if validate_1m_exhaustion(candles_1m, "CALL"):
             signal = "CALL"
             
-    # PUT Setup: Swept the M15 High, but closed back inside with a bearish pattern
-    elif c_high > highest_high and c_close < highest_high:
+    # PUT Setup: Swept the M15 High, but closed back inside with strong rejection wick
+    elif c_high > highest_high and c_close < highest_high and upper_shadow >= (1.5 * body):
         if validate_1m_exhaustion(candles_1m, "PUT"):
             signal = "PUT"
             
