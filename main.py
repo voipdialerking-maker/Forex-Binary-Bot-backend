@@ -13,7 +13,7 @@ import config
 import database
 import notifier
 from indicators import calculate_all_indicators
-from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy, check_master_candle_strategy, check_fractal_retest_strategy, check_rsi_pivot_divergence_strategy
+from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy, check_master_candle_strategy, check_rsi_pivot_divergence_strategy, check_order_block_retest_strategy
 from data_feed import TVDataFeed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -67,7 +67,7 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
         fetch_m15 = lambda p, count=250: fetch_tv_candles_cached(p, "15m", count)
 
         # -------------------------------------------------------------
-        # Evaluate Strategy 1 (Trend Exhaustion) & Strategy 7 (ParkF RSI Divergence) every 5th minute
+        # Evaluate 5-Minute Institutional Strategies every 5th minute
         # -------------------------------------------------------------
         if current_minute % 5 == 0:
             logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached. Checking 5m Strategies...")
@@ -78,6 +78,8 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
                 signal_data = check_trend_exhaustion(df_with_indicators)
                 if not signal_data:
                     signal_data = check_rsi_pivot_divergence_strategy(df_with_indicators)
+                if not signal_data:
+                    signal_data = check_order_block_retest_strategy(df_with_indicators)
         
         # -------------------------------------------------------------
         # Evaluate Strategy 2 (SMC Sweep) & 3 (SMA-SMC) EVERY minute
@@ -103,10 +105,6 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
         if not signal_data:
             # Evaluate Strategy 5 (Master Candle Fakeout Rejection) - 75%+ Win Rate!
             signal_data = check_master_candle_strategy(candle_history)
-            
-        if not signal_data:
-            # Evaluate Strategy 6 (Fractal 20 Breakout & Retest Flip Level)
-            signal_data = check_fractal_retest_strategy(candle_history)
 
         if signal_data:
             direction = signal_data["signal"]

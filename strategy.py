@@ -627,23 +627,16 @@ def check_master_candle_strategy(candles_1m: list) -> dict:
         
     return None
 
-def check_fractal_retest_strategy(candles_1m: list) -> dict:
+def check_order_block_retest_strategy(df: pd.DataFrame) -> dict:
     """
-    Evaluates Strategy 6: Fractal 10 Breakout & Retest (Flip Level Strategy) on 1-Minute chart.
-    1. Finds Williams Fractals (n=10, 10 before & 10 after, matching TradingView script exactly).
-    2. Checks if a candle broke the level with its BODY close (close > f_high / close < f_low)
-       and if the NEXT candle confirmed in the same direction (Green for CALL, Red for PUT).
-    3. Enforces SINGLE-USE & UNBROKEN protection: Discards level if it was already broken back across
-       or already retested by an earlier candle.
-    4. Triggers 5m BUY/SELL signal ONLY when price touches within ~1.5 pips (0.015%) and rejects.
+    Evaluates Strategy 8: wugamlo Order Block Finder (5-Consecutive Candle Institutional OB) on 5m chart.
+    1. Bullish OB: A red candle followed by 5 consecutive green candles.
+    2. Bearish OB: A green candle followed by 5 consecutive red candles.
+    3. Pure Retest Rule: Triggers ONLY when price returns to test the OB zone without breaking the level
+       with any candle body close (min(open, close) >= ob_low for CALL, max(open, close) <= ob_high for PUT).
     """
-    if not candles_1m or len(candles_1m) < 40:
+    if len(df) < 30:
         return None
-        
-    import pandas as pd
-    df = pd.DataFrame(candles_1m)
-    for col in ['open', 'high', 'low', 'close', 'epoch']:
-        df[col] = pd.to_numeric(df[col])
         
     c_idx = len(df) - 2 # Recently completed candle
     c_candle = df.iloc[c_idx]
@@ -652,93 +645,75 @@ def check_fractal_retest_strategy(candles_1m: list) -> dict:
     if not is_valid_trading_session(c_epoch):
         return None
         
-    c_open = c_candle['open']
-    c_close = c_candle['close']
-    c_high = c_candle['high']
-    c_low = c_candle['low']
+    c_open = float(c_candle['open'])
+    c_close = float(c_candle['close'])
+    c_high = float(c_candle['high'])
+    c_low = float(c_candle['low'])
     body = abs(c_close - c_open)
+    lower_shadow = min(c_open, c_close) - c_low
+    upper_shadow = c_high - max(c_open, c_close)
     
-    # We scan from index max(10, len(df)-200) up to len(df)-15 for n=10 Williams Fractals
-    start_idx = max(10, len(df) - 200)
-    end_idx = len(df) - 15
-    n = 10
+    periods = 5
+    valid_bullish_obs = []
+    valid_bearish_obs = []
     
-    valid_support_levels = []
-    valid_resistance_levels = []
-    
-    for i in range(start_idx, end_idx):
-        h_i = df['high'].iloc[i]
-        l_i = df['low'].iloc[i]
-        
-        # --- 1. CHECK UP FRACTAL (TradingView Williams Fractal n=10 Logic) ---
-        left_lower_up = all(df['high'].iloc[i-k] < h_i for k in range(1, n+1))
-        if left_lower_up:
-            right_lower_up = all(df['high'].iloc[i+k] < h_i for k in range(1, n+1))
-            if right_lower_up:
-                f_high = h_i
-                for j in range(i+n, c_idx):
-                    # Breakout candle j must be GREEN and body close above f_high
-                    if df['close'].iloc[j] > f_high and df['close'].iloc[j] > df['open'].iloc[j]:
-                        if j + 1 <= c_idx - 1:
-                            conf_close = df['close'].iloc[j+1]
-                            conf_open = df['open'].iloc[j+1]
-                            # Confirmation candle j+1 must be GREEN and close HIGHER than breakout close
-                            if conf_close > conf_open and conf_close > df['close'].iloc[j]:
-                                # Retest must occur within 30 candles of confirmed breakout
-                                if (c_idx - (j + 1)) <= 30:
-                                    broken = any(min(df['open'].iloc[k], df['close'].iloc[k]) < f_high for k in range(j+2, c_idx))
-                                    tested = any(df['low'].iloc[k] <= (f_high * 1.00015) for k in range(j+2, c_idx))
-                                    if not broken and not tested:
-                                        valid_support_levels.append(f_high)
-                        break
-                        
-        # --- 2. CHECK DOWN FRACTAL (TradingView Williams Fractal n=10 Logic) ---
-        left_higher_down = all(df['low'].iloc[i-k] > l_i for k in range(1, n+1))
-        if left_higher_down:
-            right_higher_down = all(df['low'].iloc[i+k] > l_i for k in range(1, n+1))
-            if right_higher_down:
-                f_low = l_i
-                for j in range(i+n, c_idx):
-                    # Breakdown candle j must be RED and body close below f_low
-                    if df['close'].iloc[j] < f_low and df['close'].iloc[j] < df['open'].iloc[j]:
-                        if j + 1 <= c_idx - 1:
-                            conf_close = df['close'].iloc[j+1]
-                            conf_open = df['open'].iloc[j+1]
-                            # Confirmation candle j+1 must be RED and close LOWER than breakdown close
-                            if conf_close < conf_open and conf_close < df['close'].iloc[j]:
-                                # Retest must occur within 30 candles of confirmed breakdown
-                                if (c_idx - (j + 1)) <= 30:
-                                    broken = any(max(df['open'].iloc[k], df['close'].iloc[k]) > f_low for k in range(j+2, c_idx))
-                                    tested = any(df['high'].iloc[k] >= (f_low * 0.99985) for k in range(j+2, c_idx))
-                                    if not broken and not tested:
-                                        valid_resistance_levels.append(f_low)
-                        break
+    # We scan for OBs formed in history up to c_idx - (periods + 1)
+    for i in range(1, c_idx - (periods + 1)):
+        # --- 1. BULLISH ORDER BLOCK ---
+        # Red candle followed by 5 green candles
+        if df['close'].iloc[i] < df['open'].iloc[i]:
+            subsequent_greens = all(df['close'].iloc[i+k] > df['open'].iloc[i+k] for k in range(1, periods + 1))
+            if subsequent_greens:
+                ob_high = float(df['open'].iloc[i]) # Top of red body
+                ob_low = float(df['low'].iloc[i])   # Bottom wick
+                
+                # Check that OB has NOT been broken by any body close or already retested
+                broken = any(min(df['open'].iloc[k], df['close'].iloc[k]) < ob_low for k in range(i + periods + 1, c_idx))
+                tested = any(df['low'].iloc[k] <= (ob_high * 1.00015) for k in range(i + periods + 1, c_idx))
+                if not broken and not tested:
+                    valid_bullish_obs.append((ob_high, ob_low))
+                    
+        # --- 2. BEARISH ORDER BLOCK ---
+        # Green candle followed by 5 red candles
+        if df['close'].iloc[i] > df['open'].iloc[i]:
+            subsequent_reds = all(df['close'].iloc[i+k] < df['open'].iloc[i+k] for k in range(1, periods + 1))
+            if subsequent_reds:
+                ob_high = float(df['high'].iloc[i]) # Top wick
+                ob_low = float(df['open'].iloc[i])  # Bottom of green body
+                
+                # Check that OB has NOT been broken by any body close or already retested
+                broken = any(max(df['open'].iloc[k], df['close'].iloc[k]) > ob_high for k in range(i + periods + 1, c_idx))
+                tested = any(df['high'].iloc[k] >= (ob_low * 0.99985) for k in range(i + periods + 1, c_idx))
+                if not broken and not tested:
+                    valid_bearish_obs.append((ob_high, ob_low))
                     
     signal = None
-    strategy_name = "Fractal 20 (Pure Retest)"
+    strategy_name = "Order Block Finder (5m Pure Retest)"
     
-    # Check ONLY the most recent valid, untouched Support Level -> CALL (~1.5 pips buffer)
-    if valid_support_levels:
-        sup = valid_support_levels[-1]
-        if c_low <= (sup * 1.00015) and min(c_open, c_close) >= sup:
-            if c_close > c_open or (min(c_open, c_close) - c_low) >= body:
+    # Check most recent valid Bullish OB -> CALL
+    if valid_bullish_obs:
+        ob_high, ob_low = valid_bullish_obs[-1]
+        # Wick touches OB zone (~1.5 pips) AND body stays valid above ob_low
+        if c_low <= (ob_high * 1.00015) and min(c_open, c_close) >= ob_low:
+            if c_close > c_open or lower_shadow >= body:
                 signal = "CALL"
-                logger.info(f"FRACTAL 20 SUPPORT PURE RETEST CALL @ {c_close} | Support Level: {sup:.5f}")
+                logger.info(f"WUGAMLO BULLISH OB PURE RETEST CALL @ {c_close} | OB Zone: [{ob_low:.5f} - {ob_high:.5f}]")
                 
-    # Check ONLY the most recent valid, untouched Resistance Level -> PUT (~1.5 pips buffer)
-    if not signal and valid_resistance_levels:
-        res = valid_resistance_levels[-1]
-        if c_high >= (res * 0.99985) and max(c_open, c_close) <= res:
-            if c_close < c_open or (c_high - max(c_open, c_close)) >= body:
+    # Check most recent valid Bearish OB -> PUT
+    if not signal and valid_bearish_obs:
+        ob_high, ob_low = valid_bearish_obs[-1]
+        # Wick touches OB zone (~1.5 pips) AND body stays valid below ob_high
+        if c_high >= (ob_low * 0.99985) and max(c_open, c_close) <= ob_high:
+            if c_close < c_open or upper_shadow >= body:
                 signal = "PUT"
-                logger.info(f"FRACTAL 20 RESISTANCE PURE RETEST PUT @ {c_close} | Resistance Level: {res:.5f}")
-                    
+                logger.info(f"WUGAMLO BEARISH OB PURE RETEST PUT @ {c_close} | OB Zone: [{ob_low:.5f} - {ob_high:.5f}]")
+                
     if signal:
         return {
             "pair": None,
             "signal": signal,
             "entry_price": float(c_close),
-            "rsi": None,
+            "rsi": float(c_candle.get('rsi', 50.0)),
             "stochastic": None,
             "volume_ratio": float(c_candle.get('volume_ratio', 1.0)),
             "volume": float(c_candle.get('volume', 1.0)),
