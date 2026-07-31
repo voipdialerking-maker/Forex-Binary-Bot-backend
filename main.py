@@ -13,7 +13,7 @@ import config
 import database
 import notifier
 from indicators import calculate_all_indicators
-from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy, check_master_candle_strategy, check_fractal_retest_strategy
+from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy, check_master_candle_strategy, check_fractal_retest_strategy, check_rsi_pivot_divergence_strategy
 from data_feed import TVDataFeed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -63,19 +63,21 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
 
         # Set up dynamic fetchers based on data source
         from tv_client import fetch_tv_candles_cached
-        fetch_5m = lambda p, count=50: fetch_tv_candles_cached(p, "5m", count)
+        fetch_5m = lambda p, count=120: fetch_tv_candles_cached(p, "5m", count)
         fetch_m15 = lambda p, count=250: fetch_tv_candles_cached(p, "15m", count)
 
         # -------------------------------------------------------------
-        # Evaluate Strategy 1 (Trend Exhaustion) ONLY every 5th minute
+        # Evaluate Strategy 1 (Trend Exhaustion) & Strategy 7 (ParkF RSI Divergence) every 5th minute
         # -------------------------------------------------------------
         if current_minute % 5 == 0:
-            logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached. Checking Strategy 1 (Trend Exhaustion)...")
+            logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached. Checking 5m Strategies...")
             candles_5m = await fetch_5m(pair)
-            if candles_5m and len(candles_5m) > 30:
+            if candles_5m and len(candles_5m) > 40:
                 df_5m = pd.DataFrame(candles_5m)
                 df_with_indicators = calculate_all_indicators(df_5m)
                 signal_data = check_trend_exhaustion(df_with_indicators)
+                if not signal_data:
+                    signal_data = check_rsi_pivot_divergence_strategy(df_with_indicators)
         
         # -------------------------------------------------------------
         # Evaluate Strategy 2 (SMC Sweep) & 3 (SMA-SMC) EVERY minute

@@ -747,3 +747,104 @@ def check_fractal_retest_strategy(candles_1m: list) -> dict:
         }
         
     return None
+
+def check_rsi_pivot_divergence_strategy(df: pd.DataFrame) -> dict:
+    """
+    Evaluates Strategy 7: ParkF RSI Pivot Divergence on 5m timeframe.
+    Uses Left Bars = 15, Right Bars = 2 to detect regular bullish/bearish RSI divergence.
+    """
+    if len(df) < 40:
+        return None
+        
+    c_idx = len(df) - 2 # Last completed 5m candle index
+    c_candle = df.iloc[c_idx]
+    c_epoch = int(c_candle['epoch'])
+    
+    if not is_valid_trading_session(c_epoch):
+        return None
+        
+    lb = 15
+    rb = 2
+    
+    if c_idx < (lb + rb + 2):
+        return None
+        
+    # 1. Detect Pivot Lows and Pivot Highs across available 5m history
+    pls = []
+    phs = []
+    
+    for p in range(lb, c_idx - rb + 1):
+        # Pivot Low check
+        left_higher_low = all(df['low'].iloc[p-k] > df['low'].iloc[p] for k in range(1, lb+1))
+        right_higher_low = all(df['low'].iloc[p+k] > df['low'].iloc[p] for k in range(1, rb+1))
+        if left_higher_low and right_higher_low:
+            pls.append(p)
+            
+        # Pivot High check
+        left_lower_high = all(df['high'].iloc[p-k] < df['high'].iloc[p] for k in range(1, lb+1))
+        right_lower_high = all(df['high'].iloc[p+k] < df['high'].iloc[p] for k in range(1, rb+1))
+        if left_lower_high and right_lower_high:
+            phs.append(p)
+            
+    signal = None
+    
+    c_open = float(c_candle['open'])
+    c_close = float(c_candle['close'])
+    c_high = float(c_candle['high'])
+    c_low = float(c_candle['low'])
+    body = abs(c_close - c_open)
+    lower_shadow = min(c_open, c_close) - c_low
+    upper_shadow = c_high - max(c_open, c_close)
+    
+    # --- Check Bullish Divergence (CALL) ---
+    if len(pls) >= 2:
+        pl1 = pls[-2] # Older pivot low
+        pl2 = pls[-1] # Newer pivot low
+        
+        # Freshness check: pl2 must have been confirmed within last 5 bars
+        if (c_idx - pl2) <= 5:
+            price_pl1 = float(df['low'].iloc[pl1])
+            price_pl2 = float(df['low'].iloc[pl2])
+            rsi_pl1 = float(df['rsi'].iloc[pl1])
+            rsi_pl2 = float(df['rsi'].iloc[pl2])
+            
+            # Price Lower Low AND RSI Higher Low (Regular Bullish Divergence)
+            if price_pl2 < price_pl1 and rsi_pl2 > rsi_pl1 and rsi_pl2 <= 48.0:
+                # Require confirmation rejection candle (Green close or strong lower wick)
+                if c_close > c_open or lower_shadow >= body:
+                    signal = "CALL"
+                    logger.info(f"PARKF RSI BULLISH DIVERGENCE CALL @ {c_close} | pl1={price_pl1:.5f}(rsi={rsi_pl1:.1f}) -> pl2={price_pl2:.5f}(rsi={rsi_pl2:.1f})")
+
+    # --- Check Bearish Divergence (PUT) ---
+    if not signal and len(phs) >= 2:
+        ph1 = phs[-2] # Older pivot high
+        ph2 = phs[-1] # Newer pivot high
+        
+        # Freshness check: ph2 must have been confirmed within last 5 bars
+        if (c_idx - ph2) <= 5:
+            price_ph1 = float(df['high'].iloc[ph1])
+            price_ph2 = float(df['high'].iloc[ph2])
+            rsi_ph1 = float(df['rsi'].iloc[ph1])
+            rsi_ph2 = float(df['rsi'].iloc[ph2])
+            
+            # Price Higher High AND RSI Lower High (Regular Bearish Divergence)
+            if price_ph2 > price_ph1 and rsi_ph2 < rsi_ph1 and rsi_ph2 >= 52.0:
+                # Require confirmation rejection candle (Red close or strong upper wick)
+                if c_close < c_open or upper_shadow >= body:
+                    signal = "PUT"
+                    logger.info(f"PARKF RSI BEARISH DIVERGENCE PUT @ {c_close} | ph1={price_ph1:.5f}(rsi={rsi_ph1:.1f}) -> ph2={price_ph2:.5f}(rsi={rsi_ph2:.1f})")
+                    
+    if signal:
+        return {
+            "pair": None,
+            "signal": signal,
+            "entry_price": float(c_close),
+            "rsi": float(c_candle.get('rsi', 50.0)),
+            "stochastic": None,
+            "volume_ratio": float(c_candle.get('volume_ratio', 1.0)),
+            "volume": float(c_candle.get('volume', 1.0)),
+            "epoch": c_epoch,
+            "strategy_name": "ParkF RSI Divergence (5m)"
+        }
+        
+    return None
