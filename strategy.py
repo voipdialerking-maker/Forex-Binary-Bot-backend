@@ -686,7 +686,7 @@ def check_fractal_retest_strategy(candles_1m: list) -> dict:
                             if conf_close > conf_open and conf_close > df['close'].iloc[j]:
                                 # Retest must occur within 30 candles of confirmed breakout
                                 if (c_idx - (j + 1)) <= 30:
-                                    broken = any(df['close'].iloc[k] < f_high for k in range(j+2, c_idx))
+                                    broken = any(min(df['open'].iloc[k], df['close'].iloc[k]) < f_high for k in range(j+2, c_idx))
                                     tested = any(df['low'].iloc[k] <= (f_high * 1.00015) for k in range(j+2, c_idx))
                                     if not broken and not tested:
                                         valid_support_levels.append(f_high)
@@ -708,30 +708,30 @@ def check_fractal_retest_strategy(candles_1m: list) -> dict:
                             if conf_close < conf_open and conf_close < df['close'].iloc[j]:
                                 # Retest must occur within 30 candles of confirmed breakdown
                                 if (c_idx - (j + 1)) <= 30:
-                                    broken = any(df['close'].iloc[k] > f_low for k in range(j+2, c_idx))
+                                    broken = any(max(df['open'].iloc[k], df['close'].iloc[k]) > f_low for k in range(j+2, c_idx))
                                     tested = any(df['high'].iloc[k] >= (f_low * 0.99985) for k in range(j+2, c_idx))
                                     if not broken and not tested:
                                         valid_resistance_levels.append(f_low)
                         break
                     
     signal = None
-    strategy_name = "Fractal 20 (Breakout & Retest)"
+    strategy_name = "Fractal 20 (Pure Retest)"
     
     # Check ONLY the most recent valid, untouched Support Level -> CALL (~1.5 pips buffer)
     if valid_support_levels:
         sup = valid_support_levels[-1]
-        if c_low <= (sup * 1.00015) and c_close >= sup:
+        if c_low <= (sup * 1.00015) and min(c_open, c_close) >= sup:
             if c_close > c_open or (min(c_open, c_close) - c_low) >= body:
                 signal = "CALL"
-                logger.info(f"FRACTAL 10 SUPPORT RETEST CALL @ {c_close} | Support Level: {sup:.5f}")
+                logger.info(f"FRACTAL 20 SUPPORT PURE RETEST CALL @ {c_close} | Support Level: {sup:.5f}")
                 
     # Check ONLY the most recent valid, untouched Resistance Level -> PUT (~1.5 pips buffer)
     if not signal and valid_resistance_levels:
         res = valid_resistance_levels[-1]
-        if c_high >= (res * 0.99985) and c_close <= res:
+        if c_high >= (res * 0.99985) and max(c_open, c_close) <= res:
             if c_close < c_open or (c_high - max(c_open, c_close)) >= body:
                 signal = "PUT"
-                logger.info(f"FRACTAL 10 RESISTANCE RETEST PUT @ {c_close} | Resistance Level: {res:.5f}")
+                logger.info(f"FRACTAL 20 RESISTANCE PURE RETEST PUT @ {c_close} | Resistance Level: {res:.5f}")
                     
     if signal:
         return {
