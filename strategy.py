@@ -175,10 +175,111 @@ def check_smc_sweep(candles_m15: list, candles_1m: list) -> dict:
         }
     return None
 
+def check_smc_structure_bias(df: pd.DataFrame, lookback: int = 25) -> str:
+    """
+    Pure Institutional SMC Structure & Displacement Bias Engine (No SMA/EMA/RSI indicators).
+    1. Break of Structure (BOS) / Change of Character (CHoCH):
+       - Analyzes recent Swing Highs and Swing Lows over lookback window.
+       - Identifies if market structure is making Higher Highs / Higher Lows (BULLISH)
+         or Lower Highs / Lower Lows (BEARISH).
+    2. Fair Value Gap (FVG / Institutional Displacement):
+       - Detects 3-candle institutional imbalances (unfilled price gaps).
+       - Bullish FVG: low[k+2] > high[k] (buyers displaced aggressively).
+       - Bearish FVG: high[k+2] < low[k] (sellers displaced aggressively).
+    Returns 'BULLISH' only if Bullish BOS/Structure + Bullish FVG/Displacement are present.
+    Returns 'BEARISH' only if Bearish BOS/Structure + Bearish FVG/Displacement are present.
+    Returns 'NEUTRAL' otherwise (protects against sideways noise/fake breakouts).
+    """
+    if df is None or len(df) < lookback + 5:
+        return "NEUTRAL"
+        
+    for col in ['open', 'high', 'low', 'close']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+    win = df.iloc[-lookback:-1].copy().reset_index(drop=True)
+    if len(win) < 15:
+        return "NEUTRAL"
+        
+    # --- 1. IDENTIFY SWING HIGHS & SWING LOWS (Pivots lb=2, rb=2) ---
+    swing_highs = []
+    swing_lows = []
+    for i in range(2, len(win) - 2):
+        h = float(win['high'].iloc[i])
+        l = float(win['low'].iloc[i])
+        # Pivot High
+        if h > win['high'].iloc[i-1] and h > win['high'].iloc[i-2] and h > win['high'].iloc[i+1] and h > win['high'].iloc[i+2]:
+            swing_highs.append((i, h))
+        # Pivot Low
+        if l < win['low'].iloc[i-1] and l < win['low'].iloc[i-2] and l < win['low'].iloc[i+1] and l < win['low'].iloc[i+2]:
+            swing_lows.append((i, l))
+            
+    last_close = float(win['close'].iloc[-1])
+    last_open = float(win['open'].iloc[-1])
+    
+    # Structure State Determination
+    struct_bullish = False
+    struct_bearish = False
+    
+    if len(swing_highs) >= 1 and len(swing_lows) >= 1:
+        latest_sh = swing_highs[-1][1]
+        latest_sl = swing_lows[-1][1]
+        
+        # Check Break of Structure (BOS / CHoCH)
+        if last_close > latest_sh:
+            struct_bullish = True
+        elif last_close < latest_sl:
+            struct_bearish = True
+        else:
+            # Check structure trend progression
+            if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+                if swing_highs[-1][1] >= swing_highs[-2][1] and swing_lows[-1][1] >= swing_lows[-2][1]:
+                    struct_bullish = True
+                elif swing_highs[-1][1] <= swing_highs[-2][1] and swing_lows[-1][1] <= swing_lows[-2][1]:
+                    struct_bearish = True
+    else:
+        # Fallback to pure price displacement slope if no 5-bar pivot formed yet
+        first_close = float(win['close'].iloc[0])
+        if last_close > (first_close * 1.0005):
+            struct_bullish = True
+        elif last_close < (first_close * 0.9995):
+            struct_bearish = True
+
+    # --- 2. DETECT FAIR VALUE GAPS (FVG / INSTITUTIONAL DISPLACEMENT) ---
+    has_bullish_fvg = False
+    has_bearish_fvg = False
+    
+    # Check last 10 candles for unmitigated FVG or strong displacement body
+    for k in range(max(0, len(win) - 10), len(win) - 2):
+        c0_h = float(win['high'].iloc[k])
+        c0_l = float(win['low'].iloc[k])
+        c2_h = float(win['high'].iloc[k+2])
+        c2_l = float(win['low'].iloc[k+2])
+        
+        # Bullish FVG: Gap between candle k High and candle k+2 Low
+        if c2_l > (c0_h * 1.00005):
+            has_bullish_fvg = True
+        # Bearish FVG: Gap between candle k Low and candle k+2 High
+        if c2_h < (c0_l * 0.99995):
+            has_bearish_fvg = True
+            
+    # Also check if recent candles had institutional displacement body (> 1.5x average body)
+    avg_body = (win['close'] - win['open']).abs().mean()
+    if not has_bullish_fvg:
+        has_bullish_fvg = any((win['close'].iloc[m] - win['open'].iloc[m]) >= (1.6 * avg_body) for m in range(max(0, len(win)-5), len(win)))
+    if not has_bearish_fvg:
+        has_bearish_fvg = any((win['open'].iloc[m] - win['close'].iloc[m]) >= (1.6 * avg_body) for m in range(max(0, len(win)-5), len(win)))
+
+    if struct_bullish and has_bullish_fvg:
+        return "BULLISH"
+    elif struct_bearish and has_bearish_fvg:
+        return "BEARISH"
+    return "NEUTRAL"
+
 def check_sma_smc_strategy(candles_m15: list, candles_1m: list) -> dict:
     """
-    Evaluates Strategy 3: SMA-SMC Continuation.
-    1. M15 SMA 9 & 21 for Direction.
+    Evaluates Strategy 3: SMC Continuation (Pure BOS + FVG on M15 + M1 BOS and OB).
+    1. M15 Pure Institutional BOS + FVG for Directional Bias.
     2. M1 BOS and OB Identification.
     3. M1 OB mitigation and rejection.
     """
@@ -186,18 +287,11 @@ def check_sma_smc_strategy(candles_m15: list, candles_1m: list) -> dict:
         return None
         
     df_m15 = pd.DataFrame(candles_m15)
-    df_m15['close'] = pd.to_numeric(df_m15['close'])
-    df_m15 = calculate_sma(df_m15, 9)
-    df_m15 = calculate_sma(df_m15, 21)
-    
-    last_m15 = df_m15.iloc[-2]
-    sma_9 = last_m15['sma_9']
-    sma_21 = last_m15['sma_21']
-    
-    if pd.isna(sma_9) or pd.isna(sma_21):
+    bias_m15 = check_smc_structure_bias(df_m15, lookback=20)
+    if bias_m15 == "NEUTRAL":
         return None
         
-    direction = "CALL" if sma_9 > sma_21 else "PUT"
+    direction = "CALL" if bias_m15 == "BULLISH" else "PUT"
     
     df_1m = pd.DataFrame(candles_1m)
     for col in ['open', 'high', 'low', 'close', 'volume']:
@@ -842,39 +936,18 @@ def check_mtf_smc_sniper_strategy(candles_1h: list, candles_15m: list, candles_1
         return None
 
     import pandas as pd
-    # --- STEP 1: 1H & 15M TOP-DOWN BIAS ---
-    df_1h = pd.DataFrame(candles_1h[-30:])
-    df_1h['close'] = pd.to_numeric(df_1h['close'])
-    df_1h['open'] = pd.to_numeric(df_1h['open'])
-    df_1h = calculate_sma(df_1h, 9)
-    df_1h = calculate_sma(df_1h, 21)
+    # --- STEP 1: 1H & 15M PURE SMC TOP-DOWN BIAS (BOS + FVG) ---
+    df_1h = pd.DataFrame(candles_1h)
+    df_15m = pd.DataFrame(candles_15m)
     
-    last_1h = df_1h.iloc[-2] # Last completed 1H candle
-    sma9_1h = last_1h['sma_9']
-    sma21_1h = last_1h['sma_21']
+    bias_1h = check_smc_structure_bias(df_1h, lookback=20)
+    bias_15m = check_smc_structure_bias(df_15m, lookback=20)
     
-    df_15m = pd.DataFrame(candles_15m[-35:])
-    df_15m['close'] = pd.to_numeric(df_15m['close'])
-    df_15m['open'] = pd.to_numeric(df_15m['open'])
-    df_15m = calculate_sma(df_15m, 9)
-    df_15m = calculate_sma(df_15m, 21)
-    
-    last_15m = df_15m.iloc[-2] # Last completed 15M candle
-    sma9_15m = last_15m['sma_9']
-    sma21_15m = last_15m['sma_21']
-    
-    if pd.isna(sma9_1h) or pd.isna(sma21_1h) or pd.isna(sma9_15m) or pd.isna(sma21_15m):
+    if bias_1h == "NEUTRAL" or bias_15m == "NEUTRAL":
         return None
         
-    bias_1h_bullish = (sma9_1h > sma21_1h) or (last_1h['close'] > sma21_1h)
-    bias_1h_bearish = (sma9_1h < sma21_1h) or (last_1h['close'] < sma21_1h)
-    
-    bias_15m_bullish = (sma9_15m > sma21_15m)
-    bias_15m_bearish = (sma9_15m < sma21_15m)
-    
-    # Strictly forbid counter-trend setups ("Falling Knives")
-    allow_call = bias_1h_bullish and bias_15m_bullish
-    allow_put = bias_1h_bearish and bias_15m_bearish
+    allow_call = (bias_1h == "BULLISH" and bias_15m == "BULLISH")
+    allow_put = (bias_1h == "BEARISH" and bias_15m == "BEARISH")
     
     if not allow_call and not allow_put:
         return None
