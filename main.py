@@ -68,19 +68,15 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
         fetch_1h = lambda p, count=50: fetch_tv_candles_cached(p, "1h", count)
 
         # -------------------------------------------------------------
-        # Evaluate 5-Minute Institutional Strategies every 5th minute
+        # Evaluate 5-Minute Institutional Strategy 4 every 5th minute (5m Order Block Retest)
         # -------------------------------------------------------------
         if current_minute % 5 == 0:
-            logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached. Checking 5m Strategies...")
+            logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached. Checking Strategy 4 (5m OB Retest)...")
             candles_5m = await fetch_5m(pair)
             if candles_5m and len(candles_5m) > 40:
                 df_5m = pd.DataFrame(candles_5m)
                 df_with_indicators = calculate_all_indicators(df_5m)
-                signal_data = check_trend_exhaustion(df_with_indicators)
-                if not signal_data:
-                    signal_data = check_rsi_pivot_divergence_strategy(df_with_indicators)
-                if not signal_data:
-                    signal_data = check_order_block_retest_strategy(df_with_indicators)
+                signal_data = check_order_block_retest_strategy(df_with_indicators)
         
         # -------------------------------------------------------------
         # Evaluate Strategy 10: Institutional SMT Divergence Sniper (#1 Priority EVERY minute)
@@ -97,31 +93,6 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
             candles_1h_sniper = await fetch_1h(pair, count=50)
             candles_m15_sniper = await fetch_m15(pair, count=50)
             signal_data = check_mtf_smc_sniper_strategy(candles_1h_sniper, candles_m15_sniper, candle_history)
-        
-        # -------------------------------------------------------------
-        # Evaluate Strategy 2 (SMC Sweep) & 3 (SMA-SMC) EVERY minute
-        # -------------------------------------------------------------
-        if not signal_data:
-            candles_m15_sweep = await fetch_m15(pair, count=50) # Get M15 for SMC Sweep
-            # We already have the 1m history from the WS/poller pulse! (df is a list of dicts here)
-            candles_1m = candle_history
-            signal_data = check_smc_sweep(candles_m15_sweep, candles_1m)
-            
-        if not signal_data:
-            # We need deep history for BOS/OB logic
-            candles_m15_sma = await fetch_m15(pair, count=100)
-            # candle_history now contains 250 candles from the data feed
-            candles_1m_sma = candle_history
-            signal_data = check_sma_smc_strategy(candles_m15_sma, candles_1m_sma)
-            
-        # if not signal_data:
-        #     # DISABLED: SMC-VSA (Wick Rejection) had low win rate in 1m binary scalping
-        #     candles_m15_vsa = await fetch_m15(pair, count=30)
-        #     signal_data = check_vsa_scalp_strategy(candles_m15_vsa, candle_history)
-            
-        if not signal_data:
-            # Evaluate Strategy 5 (Master Candle Fakeout Rejection) - 75%+ Win Rate!
-            signal_data = check_master_candle_strategy(candle_history)
 
         if signal_data:
             # --- INSTITUTIONAL MASTER DOLLAR COMPASS SHIELD ---
