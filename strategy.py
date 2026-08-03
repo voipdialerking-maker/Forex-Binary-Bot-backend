@@ -776,8 +776,8 @@ def check_rsi_pivot_divergence_strategy(df: pd.DataFrame) -> dict:
         pl1 = pls[-2] # Older pivot low
         pl2 = pls[-1] # Newer pivot low
         
-        # Freshness check: pl2 must have been confirmed within last 5 bars
-        if (c_idx - pl2) <= 5:
+        # Exact bar trigger: Only fire on the specific candle where pl2 is freshly confirmed by rb right bars
+        if c_idx == (pl2 + rb):
             price_pl1 = float(df['low'].iloc[pl1])
             price_pl2 = float(df['low'].iloc[pl2])
             rsi_pl1 = float(df['rsi'].iloc[pl1])
@@ -795,8 +795,8 @@ def check_rsi_pivot_divergence_strategy(df: pd.DataFrame) -> dict:
         ph1 = phs[-2] # Older pivot high
         ph2 = phs[-1] # Newer pivot high
         
-        # Freshness check: ph2 must have been confirmed within last 5 bars
-        if (c_idx - ph2) <= 5:
+        # Exact bar trigger: Only fire on the specific candle where ph2 is freshly confirmed by rb right bars
+        if c_idx == (ph2 + rb):
             price_ph1 = float(df['high'].iloc[ph1])
             price_ph2 = float(df['high'].iloc[ph2])
             rsi_ph1 = float(df['rsi'].iloc[ph1])

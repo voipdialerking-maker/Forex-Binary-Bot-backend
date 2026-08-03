@@ -44,6 +44,13 @@ def insert_signal(pair: str, direction: str, entry_price: float, rsi: float, sto
     }
 
     try:
+        # Prevent duplicate signals or repeated firing: Block if any signal was generated for this pair within the last 4 minutes
+        four_minutes_ago = (now - timedelta(minutes=4)).isoformat()
+        existing = supabase_client.table("signals").select("id").eq("pair", pair).gte("created_at", four_minutes_ago).execute()
+        if existing.data and len(existing.data) > 0:
+            logger.info(f"Duplicate signal blocked for {pair}: A signal was already generated in the last 4 minutes.")
+            return None
+
         response = supabase_client.table("signals").insert(data).execute()
         if response.data and len(response.data) > 0:
             inserted_id = response.data[0]["id"]
