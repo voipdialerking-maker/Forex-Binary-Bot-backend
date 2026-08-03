@@ -270,6 +270,15 @@ def check_smc_structure_bias(df: pd.DataFrame, lookback: int = 25) -> str:
     if not has_bearish_fvg:
         has_bearish_fvg = any((win['open'].iloc[m] - win['close'].iloc[m]) >= (1.6 * avg_body) for m in range(max(0, len(win)-5), len(win)))
 
+    # --- STRICT 5-BAR MOMENTUM SAFETY SHIELD ---
+    # Never declare BULLISH if price is actively dumping over the last 5 bars
+    last_5_change = float(win['close'].iloc[-1]) - float(win['close'].iloc[-min(6, len(win))])
+    if last_5_change < 0 and struct_bullish:
+        struct_bullish = False
+    # Never declare BEARISH if price is actively surging over the last 5 bars
+    if last_5_change > 0 and struct_bearish:
+        struct_bearish = False
+
     if struct_bullish and has_bullish_fvg:
         return "BULLISH"
     elif struct_bearish and has_bearish_fvg:
@@ -1019,8 +1028,10 @@ def check_mtf_smc_sniper_strategy(candles_1h: list, candles_15m: list, candles_1
             # 4. Liquidity Sweep: c_low swept below recent swing low OR touched deep zone, but body rejected above
             swept_liquidity = (c_low <= recent_low) or (c_low <= ote_790_call)
             if swept_liquidity:
-                # 5. Rejection Candle: Strong lower wick (>= 1.5x body) AND positive/favorable close
-                if lower_shadow >= (1.5 * body) and c_close >= (c_low + (c_high - c_low) * 0.45):
+                # 5. Rejection Candle: Strong lower wick (>= 1.5x body), GREEN candle close, AND no 3-bar dumping
+                is_green_rejection = (c_close > c_open) and (lower_shadow >= (1.5 * body)) and (c_close >= (c_low + (c_high - c_low) * 0.50))
+                recent_3_dumping = all(df_1m['close'].iloc[c_idx-m] < df_1m['open'].iloc[c_idx-m] for m in range(1, 4))
+                if is_green_rejection and not recent_3_dumping:
                     signal = "CALL"
                     logger.info(f"🎯 MTF SMC SNIPER CALL @ {c_close} | 1H+15M Bullish | Touched OTE:{touched_ote} OB:{touched_ob} | Sweep Low:{recent_low:.5f}")
 
@@ -1052,8 +1063,10 @@ def check_mtf_smc_sniper_strategy(candles_1h: list, candles_15m: list, candles_1
             # 4. Liquidity Sweep: c_high swept above recent swing high OR touched deep zone, but body rejected below
             swept_liquidity = (c_high >= recent_high) or (c_high >= ote_790_put)
             if swept_liquidity:
-                # 5. Rejection Candle: Strong upper wick (>= 1.5x body) AND negative/favorable close
-                if upper_shadow >= (1.5 * body) and c_close <= (c_low + (c_high - c_low) * 0.55):
+                # 5. Rejection Candle: Strong upper wick (>= 1.5x body), RED candle close, AND no 3-bar green surge
+                is_red_rejection = (c_close < c_open) and (upper_shadow >= (1.5 * body)) and (c_close <= (c_low + (c_high - c_low) * 0.40))
+                recent_3_surging = all(df_1m['close'].iloc[c_idx-m] > df_1m['open'].iloc[c_idx-m] for m in range(1, 4))
+                if is_red_rejection and not recent_3_surging:
                     signal = "PUT"
                     logger.info(f"🎯 MTF SMC SNIPER PUT @ {c_close} | 1H+15M Bearish | Touched OTE:{touched_ote} OB:{touched_ob} | Sweep High:{recent_high:.5f}")
 
