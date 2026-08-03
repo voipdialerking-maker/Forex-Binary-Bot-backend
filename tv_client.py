@@ -123,6 +123,8 @@ async def fetch_tv_candles_cached(pair: str, interval: str, count: int) -> list:
         cache_duration = 300
     elif interval == "15m":
         cache_duration = 900
+    elif interval == "1h":
+        cache_duration = 1800
         
     cache_entry = _CACHE[pair][interval]
     
