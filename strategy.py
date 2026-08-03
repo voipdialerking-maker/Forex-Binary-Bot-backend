@@ -1071,3 +1071,154 @@ def check_mtf_smc_sniper_strategy(candles_1h: list, candles_15m: list, candles_1
         }
         
     return None
+
+def check_master_dollar_compass_allow(pair: str, signal_type: str, eurusd_1h: list, eurusd_15m: list) -> bool:
+    """
+    Master EUR/USD Dollar Compass Shield:
+    1. Checks the Master Institutional DXY / EUR/USD trend using Pure BOS + FVG on 1H and 15M timeframes.
+    2. Protects USD-Quote pairs ('GBP/USD', 'AUD/USD', 'NZD/USD', 'EUR/USD') from taking trades against Dollar liquidity:
+       - If EUR/USD 1H & 15M is BULLISH (Dollar weakening) -> Blocks PUT (SELL) signals.
+       - If EUR/USD 1H & 15M is BEARISH (Dollar strengthening) -> Blocks CALL (BUY) signals.
+    3. Protects USD-Base pairs ('USD/JPY', 'USD/CAD', 'USD/CHF') via inverse correlation:
+       - Blocks CALL when EUR/USD is BULLISH; Blocks PUT when EUR/USD is BEARISH.
+    Returns True if trade is allowed (aligned with Master Compass or Neutral), False if blocked.
+    """
+    if not pair or not signal_type or not eurusd_1h or not eurusd_15m:
+        return True
+        
+    p_upper = pair.upper()
+    # Don't filter non-dollar pairs or cross pairs here
+    is_usd_quote = any(q in p_upper for q in ["EUR/USD", "GBP/USD", "AUD/USD", "NZD/USD"])
+    is_usd_base = any(b in p_upper for b in ["USD/JPY", "USD/CAD", "USD/CHF"])
+    
+    if not is_usd_quote and not is_usd_base:
+        return True
+        
+    import pandas as pd
+    bias_1h = check_smc_structure_bias(pd.DataFrame(eurusd_1h), lookback=20)
+    bias_15m = check_smc_structure_bias(pd.DataFrame(eurusd_15m), lookback=20)
+    
+    # Require clear macro alignment on EUR/USD to block counter-dollar trades
+    eurusd_bullish = (bias_1h == "BULLISH" and bias_15m == "BULLISH")
+    eurusd_bearish = (bias_1h == "BEARISH" and bias_15m == "BEARISH")
+    
+    if not eurusd_bullish and not eurusd_bearish:
+        return True # Neutral dollar bias -> allow strategy's own rules to govern
+        
+    if is_usd_quote:
+        if eurusd_bullish and signal_type == "PUT":
+            logger.info(f"🚫 MASTER DOLLAR COMPASS SHIELD: Blocked PUT on {pair} because EUR/USD 1H+15M is BULLISH!")
+            return False
+        if eurusd_bearish and signal_type == "CALL":
+            logger.info(f"🚫 MASTER DOLLAR COMPASS SHIELD: Blocked CALL on {pair} because EUR/USD 1H+15M is BEARISH!")
+            return False
+            
+    elif is_usd_base:
+        if eurusd_bullish and signal_type == "CALL":
+            logger.info(f"🚫 MASTER DOLLAR COMPASS SHIELD: Blocked CALL on {pair} (USD-Base) because EUR/USD 1H+15M is BULLISH!")
+            return False
+        if eurusd_bearish and signal_type == "PUT":
+            logger.info(f"🚫 MASTER DOLLAR COMPASS SHIELD: Blocked PUT on {pair} (USD-Base) because EUR/USD 1H+15M is BEARISH!")
+            return False
+            
+    return True
+
+def check_smt_divergence_sniper(pair: str, candles_1m: list, eurusd_1m: list) -> dict:
+    """
+    Strategy 10: Institutional SMT (Smart Money Tool) Divergence Sniper (5-Minute Expiry)
+    1. Compares the last 15 candles of target pair ('GBP/USD' or 'AUD/USD') against Master 'EUR/USD'.
+    2. SMT BULLISH DIVERGENCE (CALL):
+       - EUR/USD makes a Lower Low over the lookback window.
+       - Target pair refuses to drop (makes a Higher Low), showing institutional accumulation.
+       - Rejection wick confirmed -> High probability 5m CALL.
+    3. SMT BEARISH DIVERGENCE (PUT):
+       - EUR/USD makes a Higher High over the lookback window.
+       - Target pair refuses to rally (makes a Lower High), showing institutional distribution.
+       - Rejection wick confirmed -> High probability 5m PUT.
+    """
+    if not pair or "EUR/USD" in pair.upper() or not candles_1m or len(candles_1m) < 40 or not eurusd_1m or len(eurusd_1m) < 40:
+        return None
+        
+    p_upper = pair.upper()
+    if not any(q in p_upper for q in ["GBP/USD", "AUD/USD"]):
+        return None
+        
+    import pandas as pd
+    df_p = pd.DataFrame(candles_1m)
+    df_e = pd.DataFrame(eurusd_1m)
+    
+    for col in ['open', 'high', 'low', 'close', 'volume', 'epoch']:
+        df_p[col] = pd.to_numeric(df_p.get(col, 1.0))
+        df_e[col] = pd.to_numeric(df_e.get(col, 1.0))
+        
+    c_idx = len(df_p) - 2
+    e_idx = len(df_e) - 2
+    if c_idx < 25 or e_idx < 25:
+        return None
+        
+    c_candle = df_p.iloc[c_idx]
+    c_epoch = int(c_candle['epoch'])
+    
+    if not is_valid_trading_session(c_epoch):
+        return None
+        
+    c_open = float(c_candle['open'])
+    c_close = float(c_candle['close'])
+    c_high = float(c_candle['high'])
+    c_low = float(c_candle['low'])
+    body = abs(c_close - c_open)
+    lower_shadow = min(c_open, c_close) - c_low
+    upper_shadow = c_high - max(c_open, c_close)
+    
+    # Compare structure of last 15 bars vs prior 15 bars
+    w_curr_p = df_p.iloc[c_idx-15:c_idx]
+    w_prev_p = df_p.iloc[c_idx-30:c_idx-15]
+    
+    w_curr_e = df_e.iloc[e_idx-15:e_idx]
+    w_prev_e = df_e.iloc[e_idx-30:e_idx-15]
+    
+    if len(w_prev_p) < 10 or len(w_prev_e) < 10:
+        return None
+        
+    p_curr_low = float(w_curr_p['low'].min())
+    p_prev_low = float(w_prev_p['low'].min())
+    p_curr_high = float(w_curr_p['high'].max())
+    p_prev_high = float(w_prev_p['high'].max())
+    
+    e_curr_low = float(w_curr_e['low'].min())
+    e_prev_low = float(w_prev_e['low'].min())
+    e_curr_high = float(w_curr_e['high'].max())
+    e_prev_high = float(w_prev_e['high'].max())
+    
+    signal = None
+    
+    # 1. BULLISH SMT DIVERGENCE (CALL):
+    # EUR/USD made Lower Low (e_curr_low < e_prev_low), but pair made Higher Low (p_curr_low >= p_prev_low)
+    if (e_curr_low < e_prev_low) and (p_curr_low >= (p_prev_low * 0.99995)):
+        # Require institutional rejection wick on current bar
+        if lower_shadow >= (1.3 * body) and c_close > c_open:
+            signal = "CALL"
+            logger.info(f"💎 SMT BULLISH DIVERGENCE CALL on {pair} @ {c_close} | EUR/USD made Lower Low, but {pair} held Higher Low!")
+            
+    # 2. BEARISH SMT DIVERGENCE (PUT):
+    # EUR/USD made Higher High (e_curr_high > e_prev_high), but pair made Lower High (p_curr_high <= p_prev_high)
+    elif (e_curr_high > e_prev_high) and (p_curr_high <= (p_prev_high * 1.00005)):
+        # Require institutional rejection wick on current bar
+        if upper_shadow >= (1.3 * body) and c_close < c_open:
+            signal = "PUT"
+            logger.info(f"💎 SMT BEARISH DIVERGENCE PUT on {pair} @ {c_close} | EUR/USD made Higher High, but {pair} held Lower High!")
+            
+    if signal:
+        return {
+            "pair": None,
+            "signal": signal,
+            "entry_price": float(c_close),
+            "rsi": float(c_candle.get('rsi', 50.0)),
+            "stochastic": float(c_candle.get('stochastic', 50.0)),
+            "volume_ratio": float(c_candle.get('volume_ratio', 1.0)),
+            "volume": float(c_candle.get('volume', 1.0)),
+            "epoch": c_epoch,
+            "strategy_name": "SMT Divergence Sniper (5m Expiry)"
+        }
+        
+    return None

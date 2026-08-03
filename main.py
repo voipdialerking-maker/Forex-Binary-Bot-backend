@@ -13,7 +13,7 @@ import config
 import database
 import notifier
 from indicators import calculate_all_indicators
-from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy, check_master_candle_strategy, check_rsi_pivot_divergence_strategy, check_order_block_retest_strategy, check_mtf_smc_sniper_strategy
+from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy, check_master_candle_strategy, check_rsi_pivot_divergence_strategy, check_order_block_retest_strategy, check_mtf_smc_sniper_strategy, check_smt_divergence_sniper, check_master_dollar_compass_allow
 from data_feed import TVDataFeed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -83,7 +83,15 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
                     signal_data = check_order_block_retest_strategy(df_with_indicators)
         
         # -------------------------------------------------------------
-        # Evaluate Strategy 9: Institutional MTF SMC Sniper (#1 Priority EVERY minute)
+        # Evaluate Strategy 10: Institutional SMT Divergence Sniper (#1 Priority EVERY minute)
+        # -------------------------------------------------------------
+        if not signal_data and any(p in pair.upper() for p in ["GBP/USD", "AUD/USD"]):
+            eurusd_1m = await fetch_tv_candles_cached("EUR/USD", "1m", len(candle_history))
+            if eurusd_1m and len(eurusd_1m) > 40:
+                signal_data = check_smt_divergence_sniper(pair, candle_history, eurusd_1m)
+
+        # -------------------------------------------------------------
+        # Evaluate Strategy 9: Institutional MTF SMC Sniper (#2 Priority EVERY minute)
         # -------------------------------------------------------------
         if not signal_data:
             candles_1h_sniper = await fetch_1h(pair, count=50)
@@ -114,6 +122,14 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
         if not signal_data:
             # Evaluate Strategy 5 (Master Candle Fakeout Rejection) - 75%+ Win Rate!
             signal_data = check_master_candle_strategy(candle_history)
+
+        if signal_data:
+            # --- INSTITUTIONAL MASTER DOLLAR COMPASS SHIELD ---
+            eurusd_1h_shield = await fetch_1h("EUR/USD", count=50)
+            eurusd_15m_shield = await fetch_m15("EUR/USD", count=50)
+            if not check_master_dollar_compass_allow(pair, signal_data["signal"], eurusd_1h_shield, eurusd_15m_shield):
+                logger.info(f"🚫 Trade discarded for {pair}: Counter-trend against Master EUR/USD Institutional Compass!")
+                signal_data = None
 
         if signal_data:
             direction = signal_data["signal"]
