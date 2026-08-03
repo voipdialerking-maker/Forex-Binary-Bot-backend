@@ -823,3 +823,178 @@ def check_rsi_pivot_divergence_strategy(df: pd.DataFrame) -> dict:
         }
         
     return None
+
+def check_mtf_smc_sniper_strategy(candles_1h: list, candles_15m: list, candles_1m: list) -> dict:
+    """
+    Strategy 9: Institutional Multi-Timeframe SMC Sniper (5-Minute Expiry Binary Option Setup)
+    1. 1H & 15M Top-Down Directional Bias:
+       - 1H and 15M must be aligned (SMA 9 vs SMA 21 and price location).
+       - Prevents 'Falling Knife' counter-trend trades.
+    2. Fibonacci OTE (61.8% - 79%) & Institutional Order Block (OB) on 1-Minute chart:
+       - Calculates the recent structural swing impulse over the last 50 bars.
+       - Identifies Bullish/Bearish Order Blocks within that impulse.
+    3. Mandatory Institutional Touch + Liquidity Sweep + Rejection Candle:
+       - Price MUST touch the 61.8%-79% OTE Zone OR an Order Block Zone.
+       - Price MUST sweep a recent swing low (for CALL) or high (for PUT).
+       - Price MUST close with a strong institutional Rejection Wick (lower_shadow >= 1.5*body / upper_shadow >= 1.5*body).
+    """
+    if not candles_1h or len(candles_1h) < 25 or not candles_15m or len(candles_15m) < 30 or not candles_1m or len(candles_1m) < 60:
+        return None
+
+    import pandas as pd
+    # --- STEP 1: 1H & 15M TOP-DOWN BIAS ---
+    df_1h = pd.DataFrame(candles_1h[-30:])
+    df_1h['close'] = pd.to_numeric(df_1h['close'])
+    df_1h['open'] = pd.to_numeric(df_1h['open'])
+    df_1h = calculate_sma(df_1h, 9)
+    df_1h = calculate_sma(df_1h, 21)
+    
+    last_1h = df_1h.iloc[-2] # Last completed 1H candle
+    sma9_1h = last_1h['sma_9']
+    sma21_1h = last_1h['sma_21']
+    
+    df_15m = pd.DataFrame(candles_15m[-35:])
+    df_15m['close'] = pd.to_numeric(df_15m['close'])
+    df_15m['open'] = pd.to_numeric(df_15m['open'])
+    df_15m = calculate_sma(df_15m, 9)
+    df_15m = calculate_sma(df_15m, 21)
+    
+    last_15m = df_15m.iloc[-2] # Last completed 15M candle
+    sma9_15m = last_15m['sma_9']
+    sma21_15m = last_15m['sma_21']
+    
+    if pd.isna(sma9_1h) or pd.isna(sma21_1h) or pd.isna(sma9_15m) or pd.isna(sma21_15m):
+        return None
+        
+    bias_1h_bullish = (sma9_1h > sma21_1h) or (last_1h['close'] > sma21_1h)
+    bias_1h_bearish = (sma9_1h < sma21_1h) or (last_1h['close'] < sma21_1h)
+    
+    bias_15m_bullish = (sma9_15m > sma21_15m)
+    bias_15m_bearish = (sma9_15m < sma21_15m)
+    
+    # Strictly forbid counter-trend setups ("Falling Knives")
+    allow_call = bias_1h_bullish and bias_15m_bullish
+    allow_put = bias_1h_bearish and bias_15m_bearish
+    
+    if not allow_call and not allow_put:
+        return None
+        
+    # --- STEP 2: 1M STRUCTURAL SWING, OTE ZONE (61.8% - 79%), AND ORDER BLOCKS ---
+    df_1m = pd.DataFrame(candles_1m)
+    for col in ['open', 'high', 'low', 'close', 'volume', 'epoch']:
+        df_1m[col] = pd.to_numeric(df_1m.get(col, 1.0))
+        
+    c_idx = len(df_1m) - 2
+    c_candle = df_1m.iloc[c_idx]
+    c_epoch = int(c_candle['epoch'])
+    
+    if not is_valid_trading_session(c_epoch):
+        return None
+        
+    c_open = float(c_candle['open'])
+    c_close = float(c_candle['close'])
+    c_high = float(c_candle['high'])
+    c_low = float(c_candle['low'])
+    body = abs(c_close - c_open)
+    lower_shadow = min(c_open, c_close) - c_low
+    upper_shadow = c_high - max(c_open, c_close)
+    
+    # We analyze the recent impulse over the last 50 completed candles (excluding c_idx)
+    search_win = df_1m.iloc[max(0, c_idx - 50):c_idx]
+    if len(search_win) < 30:
+        return None
+        
+    swing_high = float(search_win['high'].max())
+    swing_low = float(search_win['low'].min())
+    swing_range = swing_high - swing_low
+    
+    if swing_range <= 0:
+        return None
+        
+    # Find recent swing lows/highs for Liquidity Sweep verification (last 15 candles before c_idx)
+    recent_win = df_1m.iloc[max(0, c_idx - 15):c_idx]
+    recent_low = float(recent_win['low'].min())
+    recent_high = float(recent_win['high'].max())
+    
+    signal = None
+    
+    # --- 3A. CHECK BULLISH MTF SMC SNIPER SETUP (CALL) ---
+    if allow_call:
+        # 1. Fibonacci OTE Zone (61.8% - 79.0% retracement of upward impulse)
+        ote_618_call = swing_high - (0.618 * swing_range)
+        ote_790_call = swing_high - (0.790 * swing_range)
+        
+        # 2. Bullish Order Block (last RED candle before the highest impulse green bar)
+        bullish_ob_top = None
+        bullish_ob_bot = None
+        for k in range(len(search_win) - 2, 0, -1):
+            row = search_win.iloc[k]
+            if row['close'] < row['open']:  # Red candle
+                # Check if followed by displacement up
+                if search_win.iloc[k+1]['close'] > search_win.iloc[k+1]['open']:
+                    bullish_ob_top = float(row['open'])
+                    bullish_ob_bot = float(row['low'])
+                    break
+                    
+        # 3. Mandatory Institutional Touch: c_low must dip into OTE Zone OR Bullish Order Block
+        touched_ote = (ote_790_call <= c_low <= (ote_618_call * 1.00015))
+        touched_ob = False
+        if bullish_ob_top and bullish_ob_bot:
+            touched_ob = (bullish_ob_bot <= c_low <= (bullish_ob_top * 1.00015))
+            
+        if touched_ote or touched_ob:
+            # 4. Liquidity Sweep: c_low swept below recent swing low OR touched deep zone, but body rejected above
+            swept_liquidity = (c_low <= recent_low) or (c_low <= ote_790_call)
+            if swept_liquidity:
+                # 5. Rejection Candle: Strong lower wick (>= 1.5x body) AND positive/favorable close
+                if lower_shadow >= (1.5 * body) and c_close >= (c_low + (c_high - c_low) * 0.45):
+                    signal = "CALL"
+                    logger.info(f"🎯 MTF SMC SNIPER CALL @ {c_close} | 1H+15M Bullish | Touched OTE:{touched_ote} OB:{touched_ob} | Sweep Low:{recent_low:.5f}")
+
+    # --- 3B. CHECK BEARISH MTF SMC SNIPER SETUP (PUT) ---
+    if not signal and allow_put:
+        # 1. Fibonacci OTE Zone (61.8% - 79.0% retracement of downward impulse)
+        ote_618_put = swing_low + (0.618 * swing_range)
+        ote_790_put = swing_low + (0.790 * swing_range)
+        
+        # 2. Bearish Order Block (last GREEN candle before the lowest impulse red bar)
+        bearish_ob_top = None
+        bearish_ob_bot = None
+        for k in range(len(search_win) - 2, 0, -1):
+            row = search_win.iloc[k]
+            if row['close'] > row['open']:  # Green candle
+                # Check if followed by displacement down
+                if search_win.iloc[k+1]['close'] < search_win.iloc[k+1]['open']:
+                    bearish_ob_top = float(row['high'])
+                    bearish_ob_bot = float(row['open'])
+                    break
+                    
+        # 3. Mandatory Institutional Touch: c_high must reach into OTE Zone OR Bearish Order Block
+        touched_ote = ((ote_618_put * 0.99985) <= c_high <= ote_790_put)
+        touched_ob = False
+        if bearish_ob_top and bearish_ob_bot:
+            touched_ob = ((bearish_ob_bot * 0.99985) <= c_high <= bearish_ob_top)
+            
+        if touched_ote or touched_ob:
+            # 4. Liquidity Sweep: c_high swept above recent swing high OR touched deep zone, but body rejected below
+            swept_liquidity = (c_high >= recent_high) or (c_high >= ote_790_put)
+            if swept_liquidity:
+                # 5. Rejection Candle: Strong upper wick (>= 1.5x body) AND negative/favorable close
+                if upper_shadow >= (1.5 * body) and c_close <= (c_low + (c_high - c_low) * 0.55):
+                    signal = "PUT"
+                    logger.info(f"🎯 MTF SMC SNIPER PUT @ {c_close} | 1H+15M Bearish | Touched OTE:{touched_ote} OB:{touched_ob} | Sweep High:{recent_high:.5f}")
+
+    if signal:
+        return {
+            "pair": None,
+            "signal": signal,
+            "entry_price": float(c_close),
+            "rsi": float(c_candle.get('rsi', 50.0)),
+            "stochastic": float(c_candle.get('stochastic', 50.0)),
+            "volume_ratio": float(c_candle.get('volume_ratio', 1.0)),
+            "volume": float(c_candle.get('volume', 1.0)),
+            "epoch": c_epoch,
+            "strategy_name": "MTF SMC Sniper (5m Expiry)"
+        }
+        
+    return None

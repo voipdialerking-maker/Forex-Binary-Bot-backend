@@ -13,7 +13,7 @@ import config
 import database
 import notifier
 from indicators import calculate_all_indicators
-from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy, check_master_candle_strategy, check_rsi_pivot_divergence_strategy, check_order_block_retest_strategy
+from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy, check_master_candle_strategy, check_rsi_pivot_divergence_strategy, check_order_block_retest_strategy, check_mtf_smc_sniper_strategy
 from data_feed import TVDataFeed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -65,6 +65,7 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
         from tv_client import fetch_tv_candles_cached
         fetch_5m = lambda p, count=120: fetch_tv_candles_cached(p, "5m", count)
         fetch_m15 = lambda p, count=250: fetch_tv_candles_cached(p, "15m", count)
+        fetch_1h = lambda p, count=50: fetch_tv_candles_cached(p, "1h", count)
 
         # -------------------------------------------------------------
         # Evaluate 5-Minute Institutional Strategies every 5th minute
@@ -80,6 +81,14 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
                     signal_data = check_rsi_pivot_divergence_strategy(df_with_indicators)
                 if not signal_data:
                     signal_data = check_order_block_retest_strategy(df_with_indicators)
+        
+        # -------------------------------------------------------------
+        # Evaluate Strategy 9: Institutional MTF SMC Sniper (#1 Priority EVERY minute)
+        # -------------------------------------------------------------
+        if not signal_data:
+            candles_1h_sniper = await fetch_1h(pair, count=50)
+            candles_m15_sniper = await fetch_m15(pair, count=50)
+            signal_data = check_mtf_smc_sniper_strategy(candles_1h_sniper, candles_m15_sniper, candle_history)
         
         # -------------------------------------------------------------
         # Evaluate Strategy 2 (SMC Sweep) & 3 (SMA-SMC) EVERY minute
