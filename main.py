@@ -13,7 +13,7 @@ import config
 import database
 import notifier
 from indicators import calculate_all_indicators
-from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy, check_master_candle_strategy, check_rsi_pivot_divergence_strategy, check_order_block_retest_strategy, check_mtf_smc_sniper_strategy, check_smt_divergence_sniper, check_master_dollar_compass_allow
+from strategy import check_trend_exhaustion, check_smc_sweep, check_sma_smc_strategy, validate_1m_exhaustion, check_m15_trend, check_vsa_scalp_strategy, check_master_candle_strategy, check_rsi_pivot_divergence_strategy, check_order_block_retest_strategy, check_mtf_smc_sniper_strategy, check_smt_divergence_sniper, check_master_dollar_compass_allow, check_5m_harami_smc_sniper
 from data_feed import TVDataFeed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -68,15 +68,17 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
         fetch_1h = lambda p, count=50: fetch_tv_candles_cached(p, "1h", count)
 
         # -------------------------------------------------------------
-        # Evaluate 5-Minute Institutional Strategy 4 every 5th minute (5m Order Block Retest)
+        # Evaluate 5-Minute Institutional Strategies every 5th minute (5m Chart -> Next 5m Candle Expiry)
         # -------------------------------------------------------------
         if current_minute % 5 == 0:
-            logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached. Checking Strategy 4 (5m OB Retest)...")
+            logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached. Checking 5m Institutional Harami & OB Retest...")
             candles_5m = await fetch_5m(pair)
             if candles_5m and len(candles_5m) > 40:
-                df_5m = pd.DataFrame(candles_5m)
-                df_with_indicators = calculate_all_indicators(df_5m)
-                signal_data = check_order_block_retest_strategy(df_with_indicators)
+                signal_data = check_5m_harami_smc_sniper(pair, candles_5m)
+                if not signal_data:
+                    df_5m = pd.DataFrame(candles_5m)
+                    df_with_indicators = calculate_all_indicators(df_5m)
+                    signal_data = check_order_block_retest_strategy(df_with_indicators)
         
         # -------------------------------------------------------------
         # Evaluate Strategy 10: Institutional SMT Divergence Sniper (#1 Priority EVERY minute)

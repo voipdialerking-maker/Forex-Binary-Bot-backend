@@ -1252,3 +1252,103 @@ def check_smt_divergence_sniper(pair: str, candles_1m: list, eurusd_1m: list) ->
         }
         
     return None
+
+def check_5m_harami_smc_sniper(pair: str, candles_5m: list) -> dict:
+    """
+    Evaluates 5-Minute Institutional Harami SMC Reversal Strategy (5m Chart -> Next 5m Candle Expiry).
+    Based on Harami Candlestick Reversal with 5-bar Trend Exhaustion (open[5] filter),
+    enhanced with Institutional Volume Multiplier (>= 1.20x) and RSI safety filters.
+    
+    Setup Rules:
+    1. Bullish Harami (CALL):
+       - Prev 5m bar is red (close[1] < open[1]).
+       - Current 5m bar is green (close > open).
+       - Current bar body inside previous bar body: close <= open[1] and open >= close[1].
+       - Current bar body smaller than previous bar body: (close - open) < (open[1] - close[1]).
+       - 5-Bar Trend Filter: open[5] > open (downtrend exhaustion).
+       - Institutional filter: volume_ratio >= 1.20 and RSI <= 68.
+    2. Bearish Harami (PUT):
+       - Prev 5m bar is green (close[1] > open[1]).
+       - Current 5m bar is red (close < open).
+       - Current bar body inside previous bar body: open <= close[1] and close >= open[1].
+       - Current bar body smaller than previous bar body: (open - close) < (close[1] - open[1]).
+       - 5-Bar Trend Filter: open[5] < open (uptrend exhaustion).
+       - Institutional filter: volume_ratio >= 1.20 and RSI >= 32.
+    """
+    if not candles_5m or len(candles_5m) < 25:
+        return None
+        
+    import pandas as pd
+    df = pd.DataFrame(candles_5m)
+    for col in ['open', 'high', 'low', 'close', 'volume', 'epoch']:
+        df[col] = pd.to_numeric(df.get(col, 1.0))
+        
+    df = calculate_rsi(df)
+    df = calculate_stochastic(df)
+    vol_ma = df['volume'].rolling(window=20).mean()
+    df['volume_ratio'] = df['volume'] / vol_ma.replace(0, 1.0)
+    
+    idx = len(df) - 2
+    if idx < 10:
+        return None
+        
+    c = df.iloc[idx]       # Current completed 5m candle
+    p = df.iloc[idx - 1]   # Previous 5m candle
+    p5 = df.iloc[idx - 5]  # 5 bars ago (open[5])
+    
+    c_epoch = int(c['epoch'])
+    if not is_valid_trading_session(c_epoch):
+        return None
+        
+    if float(c.get('volume_ratio', 1.0)) < 1.20:
+        return None
+        
+    c_open, c_close = float(c['open']), float(c['close'])
+    p_open, p_close = float(p['open']), float(p['close'])
+    p5_open = float(p5['open'])
+    
+    rsi = float(c.get('rsi', 50.0))
+    stochastic = float(c.get('stochastic', 50.0))
+    vol_ratio = float(c.get('volume_ratio', 1.0))
+    volume = float(c.get('volume', 1.0))
+    
+    signal = None
+    
+    # 1. Bullish Harami (CALL):
+    # (open[1] > close[1] and close > open and close <= open[1] and close[1] <= open and close - open < open[1] - close[1] and open[5] > open)
+    is_prev_red = (p_open > p_close)
+    is_curr_green = (c_close > c_open)
+    is_inside_bull = (c_close <= p_open) and (p_close <= c_open)
+    is_smaller_bull = (c_close - c_open) < (p_open - p_close)
+    trend_exhausted_bull = (p5_open > c_open)
+    
+    if is_prev_red and is_curr_green and is_inside_bull and is_smaller_bull and trend_exhausted_bull and rsi <= 68.0:
+        signal = "CALL"
+        logger.info(f"🎯 5M HARAMI SMC SNIPER CALL on {pair} @ {c_close} | Bullish Inside Bar after 5m Downtrend Exhaustion (RSI:{rsi:.1f}, Vol:{vol_ratio:.2f}x)")
+        
+    # 2. Bearish Harami (PUT):
+    # (close[1] > open[1] and open > close and open <= close[1] and open[1] <= close and open - close < close[1] - open[1] and open[5] < open)
+    is_prev_green = (p_close > p_open)
+    is_curr_red = (c_open > c_close)
+    is_inside_bear = (c_open <= p_close) and (p_open <= c_close)
+    is_smaller_bear = (c_open - c_close) < (p_close - p_open)
+    trend_exhausted_bear = (p5_open < c_open)
+    
+    if not signal and is_prev_green and is_curr_red and is_inside_bear and is_smaller_bear and trend_exhausted_bear and rsi >= 32.0:
+        signal = "PUT"
+        logger.info(f"🎯 5M HARAMI SMC SNIPER PUT on {pair} @ {c_close} | Bearish Inside Bar after 5m Uptrend Exhaustion (RSI:{rsi:.1f}, Vol:{vol_ratio:.2f}x)")
+        
+    if signal:
+        return {
+            "pair": None,
+            "signal": signal,
+            "entry_price": float(c_close),
+            "rsi": rsi,
+            "stochastic": stochastic,
+            "volume_ratio": vol_ratio,
+            "volume": volume,
+            "epoch": c_epoch,
+            "strategy_name": "5m Harami SMC Sniper (5m Expiry)"
+        }
+        
+    return None
