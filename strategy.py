@@ -3,7 +3,7 @@ import numpy as np
 import logging
 import config as config
 from datetime import datetime, timezone
-from indicators import calculate_ema, calculate_sma
+from indicators import calculate_ema, calculate_sma, calculate_rsi, calculate_stochastic
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Strategy")
@@ -966,11 +966,20 @@ def check_mtf_smc_sniper_strategy(candles_1h: list, candles_15m: list, candles_1
     for col in ['open', 'high', 'low', 'close', 'volume', 'epoch']:
         df_1m[col] = pd.to_numeric(df_1m.get(col, 1.0))
         
+    df_1m = calculate_rsi(df_1m)
+    df_1m = calculate_stochastic(df_1m)
+    vol_ma = df_1m['volume'].rolling(window=20).mean()
+    df_1m['volume_ratio'] = df_1m['volume'] / vol_ma.replace(0, 1.0)
+        
     c_idx = len(df_1m) - 2
     c_candle = df_1m.iloc[c_idx]
     c_epoch = int(c_candle['epoch'])
     
     if not is_valid_trading_session(c_epoch):
+        return None
+        
+    # Require Institutional Volume Spike (>= 1.20x average volume) to prevent low-volume drift sweeps
+    if float(c_candle.get('volume_ratio', 1.0)) < 1.20:
         return None
         
     c_open = float(c_candle['open'])
@@ -1031,7 +1040,7 @@ def check_mtf_smc_sniper_strategy(candles_1h: list, candles_15m: list, candles_1
                 # 5. Rejection Candle: Strong lower wick (>= 1.5x body), GREEN candle close, AND no 3-bar dumping
                 is_green_rejection = (c_close > c_open) and (lower_shadow >= (1.5 * body)) and (c_close >= (c_low + (c_high - c_low) * 0.50))
                 recent_3_dumping = all(df_1m['close'].iloc[c_idx-m] < df_1m['open'].iloc[c_idx-m] for m in range(1, 4))
-                if is_green_rejection and not recent_3_dumping:
+                if is_green_rejection and not recent_3_dumping and float(c_candle.get('rsi', 50.0)) <= 68.0:
                     signal = "CALL"
                     logger.info(f"🎯 MTF SMC SNIPER CALL @ {c_close} | 1H+15M Bullish | Touched OTE:{touched_ote} OB:{touched_ob} | Sweep Low:{recent_low:.5f}")
 
@@ -1066,7 +1075,7 @@ def check_mtf_smc_sniper_strategy(candles_1h: list, candles_15m: list, candles_1
                 # 5. Rejection Candle: Strong upper wick (>= 1.5x body), RED candle close, AND no 3-bar green surge
                 is_red_rejection = (c_close < c_open) and (upper_shadow >= (1.5 * body)) and (c_close <= (c_low + (c_high - c_low) * 0.40))
                 recent_3_surging = all(df_1m['close'].iloc[c_idx-m] > df_1m['open'].iloc[c_idx-m] for m in range(1, 4))
-                if is_red_rejection and not recent_3_surging:
+                if is_red_rejection and not recent_3_surging and float(c_candle.get('rsi', 50.0)) >= 32.0:
                     signal = "PUT"
                     logger.info(f"🎯 MTF SMC SNIPER PUT @ {c_close} | 1H+15M Bearish | Touched OTE:{touched_ote} OB:{touched_ob} | Sweep High:{recent_high:.5f}")
 
@@ -1164,6 +1173,11 @@ def check_smt_divergence_sniper(pair: str, candles_1m: list, eurusd_1m: list) ->
         df_p[col] = pd.to_numeric(df_p.get(col, 1.0))
         df_e[col] = pd.to_numeric(df_e.get(col, 1.0))
         
+    df_p = calculate_rsi(df_p)
+    df_p = calculate_stochastic(df_p)
+    vol_ma_p = df_p['volume'].rolling(window=20).mean()
+    df_p['volume_ratio'] = df_p['volume'] / vol_ma_p.replace(0, 1.0)
+        
     c_idx = len(df_p) - 2
     e_idx = len(df_e) - 2
     if c_idx < 25 or e_idx < 25:
@@ -1173,6 +1187,9 @@ def check_smt_divergence_sniper(pair: str, candles_1m: list, eurusd_1m: list) ->
     c_epoch = int(c_candle['epoch'])
     
     if not is_valid_trading_session(c_epoch):
+        return None
+        
+    if float(c_candle.get('volume_ratio', 1.0)) < 1.20:
         return None
         
     c_open = float(c_candle['open'])
