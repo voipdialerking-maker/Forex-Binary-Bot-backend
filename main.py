@@ -13,7 +13,7 @@ import config
 import database
 import notifier
 from indicators import calculate_all_indicators
-from strategy import check_5m_harami_smc_sniper, check_5m_smc_golden_fibo_sniper, check_1m_sr_break_retest_sniper
+from strategy import check_5m_harami_smc_sniper, check_5m_smc_golden_fibo_sniper, check_5m_ema_bos_retest_strategy
 from data_feed import TVDataFeed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -67,26 +67,24 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
 
         # Set up dynamic fetchers based on data source
         from tv_client import fetch_tv_candles_cached
-        fetch_5m = lambda p, count=120: fetch_tv_candles_cached(p, "5m", count)
+        fetch_5m = lambda p, count=250: fetch_tv_candles_cached(p, "5m", count)
 
         # -------------------------------------------------------------
         # Evaluate 5-Minute Institutional Strategy (5m Chart -> Next 5m Candle Expiry)
         # -------------------------------------------------------------
         if candle_close_minute % 5 == 0:
-            logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached (Close Time: {candle_close_time.strftime('%H:%M:%S UTC')}). Checking 5m Institutional Harami & Fibo Sniper Strategies...")
+            logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached (Close Time: {candle_close_time.strftime('%H:%M:%S UTC')}). Checking 5m Strategies...")
             candles_5m = await fetch_5m(pair)
-            if candles_5m and len(candles_5m) > 40:
+            if candles_5m and len(candles_5m) > 150: # Need 150 for EMA 200
                 signal_data = check_5m_harami_smc_sniper(pair, candles_5m)
                 
-                # If Harami didn't fire, check the new Fibo strategy
+                # If Harami didn't fire, check Fibo
                 if not signal_data:
                     signal_data = check_5m_smc_golden_fibo_sniper(pair, candles_5m)
-
-        # -------------------------------------------------------------
-        # Evaluate 1-Minute S/R Break & Retest Sniper (EVERY minute -> 5m Expiry)
-        # -------------------------------------------------------------
-        if not signal_data:
-            signal_data = check_1m_sr_break_retest_sniper(pair, candle_history)
+                    
+                # If Fibo didn't fire, check EMA BOS Retest
+                if not signal_data:
+                    signal_data = check_5m_ema_bos_retest_strategy(pair, candles_5m)
 
         if signal_data:
             direction = signal_data["signal"]

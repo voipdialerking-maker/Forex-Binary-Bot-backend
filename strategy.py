@@ -1497,122 +1497,134 @@ def check_5m_smc_golden_fibo_sniper(pair: str, candles_5m: list) -> dict:
         
     return None
 
-
-def check_1m_sr_break_retest_sniper(pair: str, candles_1m: list) -> dict:
+def check_5m_ema_bos_retest_strategy(pair: str, candles_5m: list) -> dict:
     """
-    Evaluates 1m S/R Break & Retest Sniper (1m Chart -> 5m Expiry).
-    Based on 'Breaks and Retests with Volatility Stop [HG]' PineScript.
-    Detects 20-bar Pivot High/Low to draw S/R boxes, detects breakout, and triggers on first Retest.
+    Evaluates the 5m 50/200 EMA Trend Continuation Strategy with BOS verification.
+    1. Uptrend: 50 EMA > 200 EMA, Downtrend: 50 EMA < 200 EMA
+    2. Retest: Price pulls back to the 50 EMA.
+    3. BOS Logic: The rally that happened before the current pullback MUST have broken the High/Low of the rally that happened before the previous pullback.
+    4. Triggers on a reversal candle close at/inside the EMA.
     """
-    if not candles_1m or len(candles_1m) < 100:
+    if not candles_5m or len(candles_5m) < 150:
         return None
         
     import pandas as pd
-    df = pd.DataFrame(candles_1m)
-    for col in ['open', 'high', 'low', 'close', 'epoch']:
-        df[col] = pd.to_numeric(df.get(col, 0.0))
+    df = pd.DataFrame(candles_5m)
+    for col in ['open', 'high', 'low', 'close', 'volume', 'epoch']:
+        df[col] = pd.to_numeric(df.get(col, 1.0))
         
-    bb = 20
+    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+    df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
     
-    # State tracking
-    sBreak = False
-    sBreak_idx = -1
-    sTop = None
-    sBot = None
+    idx = len(df) - 2 # Completed candle
+    c = df.iloc[idx]
+    p = df.iloc[idx - 1]
     
-    rBreak = False
-    rBreak_idx = -1
-    rTop = None
-    rBot = None
+    c_close = float(c['close'])
+    c_open = float(c['open'])
+    p_close = float(p['close'])
+    p_open = float(p['open'])
     
-    # We iterate from the first possible pivot confirmation to build the historical state
-    last_idx = len(df) - 2 # the just-closed candle
-    
-    for i in range(2 * bb, last_idx + 1):
-        # 1. Pivot Detection at index i - bb
-        idx_pivot = i - bb
-        c_low = df.iloc[idx_pivot]['low']
-        c_high = df.iloc[idx_pivot]['high']
-        
-        is_pl = True
-        is_ph = True
-        
-        for j in range(1, bb + 1):
-            # Left side
-            if df.iloc[idx_pivot - j]['low'] <= c_low: is_pl = False
-            if df.iloc[idx_pivot - j]['high'] >= c_high: is_ph = False
-            # Right side
-            if df.iloc[idx_pivot + j]['low'] <= c_low: is_pl = False
-            if df.iloc[idx_pivot + j]['high'] >= c_high: is_ph = False
-            
-        if is_pl:
-            sBot = c_low
-            l1 = df.iloc[idx_pivot - 1]['low']
-            l2 = df.iloc[idx_pivot + 1]['low']
-            sTop = min(l1, l2)
-            sBreak = False
-            
-        if is_ph:
-            rTop = c_high
-            h1 = df.iloc[idx_pivot - 1]['high']
-            h2 = df.iloc[idx_pivot + 1]['high']
-            rBot = max(h1, h2)
-            rBreak = False
-            
-        # 2. Breakout Detection on the current simulated candle (i)
-        c_close = df.iloc[i]['close']
-        p_close = df.iloc[i - 1]['close']
-        
-        if sBot is not None and not sBreak:
-            if p_close >= sBot and c_close < sBot:
-                sBreak = True
-                sBreak_idx = i
-                
-        if rTop is not None and not rBreak:
-            if p_close <= rTop and c_close > rTop:
-                rBreak = True
-                rBreak_idx = i
-                
-    # Now evaluate Retest on the just-closed candle
-    c = df.iloc[last_idx]
-    c_high, c_low, c_close, c_open = c['high'], c['low'], c['close'], c['open']
-    c_epoch = int(c['epoch'])
+    trend_up = float(c['ema_50']) > float(c['ema_200'])
+    trend_down = float(c['ema_50']) < float(c['ema_200'])
     
     signal = None
     
-    # Support Retest (PUT) - Price broke support, now goes up to retest it as resistance
-    if sBreak and sBot is not None and sTop is not None and (last_idx - sBreak_idx) > 2:
-        s1 = c_high >= sTop and c_close <= sBot
-        s2 = c_high >= sTop and c_close >= sBot and c_close <= sTop
-        s3 = c_high >= sBot and c_high <= sTop
-        s4 = c_high >= sBot and c_high <= sTop and c_close < sBot
-        
-        if s1 or s2 or s3 or s4:
-            signal = "PUT"
-            logger.info(f"⚡ 1M S/R BREAK & RETEST PUT on {pair} @ {c_close} | Support Broken, Now Retesting as Resistance")
+    if trend_up:
+        # Check current touch (low must hit or go below 50 EMA, but close above it preferably)
+        if float(c['low']) <= float(c['ema_50']):
+            # Walk back to verify BOS
+            i = idx
+            # 1. Skip current touch cluster
+            while i >= 0 and float(df['low'].iloc[i]) <= float(df['ema_50'].iloc[i]):
+                i -= 1
             
-    # Resistance Retest (CALL) - Price broke resistance, now falls to retest it as support
-    if not signal and rBreak and rBot is not None and rTop is not None and (last_idx - rBreak_idx) > 2:
-        r1 = c_low <= rBot and c_close >= rTop
-        r2 = c_low <= rBot and c_close <= rTop and c_close >= rBot
-        r3 = c_low <= rTop and c_low >= rBot
-        r4 = c_low <= rTop and c_low >= rBot and c_close > rTop
-        
-        if r1 or r2 or r3 or r4:
-            signal = "CALL"
-            logger.info(f"⚡ 1M S/R BREAK & RETEST CALL on {pair} @ {c_close} | Resistance Broken, Now Retesting as Support")
+            if i >= 0:
+                # 2. Find Rally 1 High
+                rally1_high = -1.0
+                while i >= 0 and float(df['low'].iloc[i]) > float(df['ema_50'].iloc[i]):
+                    if float(df['high'].iloc[i]) > rally1_high:
+                        rally1_high = float(df['high'].iloc[i])
+                    i -= 1
+                
+                if i >= 0:
+                    # 3. Skip Previous Touch cluster
+                    trend_changed = False
+                    while i >= 0 and float(df['low'].iloc[i]) <= float(df['ema_50'].iloc[i]):
+                        if float(df['ema_50'].iloc[i]) <= float(df['ema_200'].iloc[i]):
+                            trend_changed = True
+                            break
+                        i -= 1
+                    
+                    if not trend_changed and i >= 0:
+                        # 4. Find Rally 2 High
+                        rally2_high = -1.0
+                        while i >= 0 and float(df['low'].iloc[i]) > float(df['ema_50'].iloc[i]):
+                            if float(df['high'].iloc[i]) > rally2_high:
+                                rally2_high = float(df['high'].iloc[i])
+                            if float(df['ema_50'].iloc[i]) <= float(df['ema_200'].iloc[i]):
+                                break
+                            i -= 1
+                            
+                        # If Rally 1 High did not break Rally 2 High, invalid!
+                        if rally1_high <= rally2_high:
+                            return None
             
+            # If we reached here, BOS is verified or it's the first pullback
+            is_bullish_close = c_close > c_open
+            if is_bullish_close:
+                signal = "CALL"
+                logger.info(f"📈 50/200 EMA BOS RETEST CALL on {pair} @ {c_close} | BOS Confirmed Pullback")
+                
+    elif trend_down:
+        if float(c['high']) >= float(c['ema_50']):
+            i = idx
+            while i >= 0 and float(df['high'].iloc[i]) >= float(df['ema_50'].iloc[i]):
+                i -= 1
+                
+            if i >= 0:
+                rally1_low = 9999999.0
+                while i >= 0 and float(df['high'].iloc[i]) < float(df['ema_50'].iloc[i]):
+                    if float(df['low'].iloc[i]) < rally1_low:
+                        rally1_low = float(df['low'].iloc[i])
+                    i -= 1
+                    
+                if i >= 0:
+                    trend_changed = False
+                    while i >= 0 and float(df['high'].iloc[i]) >= float(df['ema_50'].iloc[i]):
+                        if float(df['ema_50'].iloc[i]) >= float(df['ema_200'].iloc[i]):
+                            trend_changed = True
+                            break
+                        i -= 1
+                        
+                    if not trend_changed and i >= 0:
+                        rally2_low = 9999999.0
+                        while i >= 0 and float(df['high'].iloc[i]) < float(df['ema_50'].iloc[i]):
+                            if float(df['low'].iloc[i]) < rally2_low:
+                                rally2_low = float(df['low'].iloc[i])
+                            if float(df['ema_50'].iloc[i]) >= float(df['ema_200'].iloc[i]):
+                                break
+                            i -= 1
+                            
+                        if rally1_low >= rally2_low:
+                            return None
+                            
+            is_bearish_close = c_close < c_open
+            if is_bearish_close:
+                signal = "PUT"
+                logger.info(f"📉 50/200 EMA BOS RETEST PUT on {pair} @ {c_close} | BOS Confirmed Pullback")
+                
     if signal:
         return {
             "pair": None,
             "signal": signal,
-            "entry_price": float(c_close),
-            "rsi": 50.0,
-            "stochastic": 50.0,
-            "volume_ratio": 1.0,
+            "entry_price": c_close,
+            "rsi": float(c.get('rsi', 50.0)),
+            "stochastic": float(c.get('stochastic', 50.0)),
+            "volume_ratio": float(c.get('volume_ratio', 1.0)),
             "volume": float(c.get('volume', 1.0)),
-            "epoch": c_epoch,
-            "strategy_name": "1m S/R Break & Retest Sniper (5m Expiry)"
+            "epoch": int(c['epoch']),
+            "strategy_name": "50/200 EMA BOS Retest (5m Expiry)"
         }
         
     return None
