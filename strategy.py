@@ -1450,17 +1450,27 @@ def check_5m_smc_golden_fibo_sniper(pair: str, candles_5m: list) -> dict:
         fibo_0_5 = swing_high - (diff * 0.5)
         fibo_0_618 = swing_high - (diff * 0.618)
         
+        # Check if Fibo 0 (High) or Fibo 1 (Low) is broken by current candle
+        if c_high > swing_high or c_low < swing_low:
+            return None # BOS or CHoCH happened, wait for new pivot
+            
+        # Check if any candle BEFORE current candle already touched the zone (First Touch Rule)
+        already_touched = False
+        for i in range(last_pivot['idx'] + 1, idx):
+            if float(df.iloc[i]['low']) <= fibo_0_5 * 1.0002:
+                already_touched = True
+                break
+                
+        if already_touched:
+            return None # Not the first touch
+            
         # Zone is [fibo_0_618, fibo_0_5]. 0.618 is the lower bound, 0.5 is the upper bound.
-        # Check if the recent price action entered the golden zone
-        swept_zone = (c_low <= fibo_0_5 * 1.0002) and (c_low >= fibo_0_618 * 0.9995)
+        # Option A: Trigger on the close of the FIRST candle that touches the zone
+        swept_zone = (c_low <= fibo_0_5 * 1.0002) and (c_close >= fibo_0_618 * 0.9995)
         
-        # Confirmation: Reversal Candle (Green close)
-        is_bullish_close = (c_close > c_open)
-        is_prev_bearish = (p_open > p_close)
-        
-        if swept_zone and is_bullish_close and is_prev_bearish:
+        if swept_zone:
             signal = "CALL"
-            logger.info(f"💎 5M SMC FIBO SNIPER CALL on {pair} @ {c_close} | Bounced off Fibo Golden Zone [0.5 - 0.618]")
+            logger.info(f"💎 5M SMC FIBO SNIPER CALL on {pair} @ {c_close} | First Touch of Fibo Golden Zone [0.5 - 0.618]")
             
     # 5. DOWNWARD IMPULSE LEG (Looking for PUT at Fibo retracement)
     elif prev_pivot['type'] == 'PH' and last_pivot['type'] == 'PL':
@@ -1471,16 +1481,27 @@ def check_5m_smc_golden_fibo_sniper(pair: str, candles_5m: list) -> dict:
         fibo_0_5 = swing_low + (diff * 0.5)
         fibo_0_618 = swing_low + (diff * 0.618)
         
+        # Check if Fibo 0 (Low) or Fibo 1 (High) is broken by current candle
+        if c_low < swing_low or c_high > swing_high:
+            return None # BOS or CHoCH happened, wait for new pivot
+            
+        # Check if any candle BEFORE current candle already touched the zone (First Touch Rule)
+        already_touched = False
+        for i in range(last_pivot['idx'] + 1, idx):
+            if float(df.iloc[i]['high']) >= fibo_0_5 * 0.9998:
+                already_touched = True
+                break
+                
+        if already_touched:
+            return None # Not the first touch
+            
         # Zone is [fibo_0_5, fibo_0_618]. 0.5 is the lower bound, 0.618 is the upper bound.
-        swept_zone = (c_high >= fibo_0_5 * 0.9998) and (c_high <= fibo_0_618 * 1.0005)
+        # Option A: Trigger on the close of the FIRST candle that touches the zone
+        swept_zone = (c_high >= fibo_0_5 * 0.9998) and (c_close <= fibo_0_618 * 1.0005)
         
-        # Confirmation: Reversal Candle (Red close)
-        is_bearish_close = (c_close < c_open)
-        is_prev_bullish = (p_close > p_open)
-        
-        if swept_zone and is_bearish_close and is_prev_bullish:
+        if swept_zone:
             signal = "PUT"
-            logger.info(f"💎 5M SMC FIBO SNIPER PUT on {pair} @ {c_close} | Rejected from Fibo Golden Zone [0.5 - 0.618]")
+            logger.info(f"💎 5M SMC FIBO SNIPER PUT on {pair} @ {c_close} | First Touch of Fibo Golden Zone [0.5 - 0.618]")
             
     if signal:
         return {
