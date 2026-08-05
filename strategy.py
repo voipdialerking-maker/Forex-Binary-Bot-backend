@@ -1298,10 +1298,12 @@ def check_5m_harami_smc_sniper(pair: str, candles_5m: list) -> dict:
     
     c_epoch = int(c['epoch'])
     if not is_valid_trading_session(c_epoch):
-        return None
+        # return None
+        pass
         
     if float(c.get('volume_ratio', 1.0)) < 1.20:
-        return None
+        # return None
+        pass
         
     c_open, c_close = float(c['open']), float(c['close'])
     p_open, p_close = float(p['open']), float(p['close'])
@@ -1322,7 +1324,7 @@ def check_5m_harami_smc_sniper(pair: str, candles_5m: list) -> dict:
     is_smaller_bull = (c_close - c_open) < (p_open - p_close)
     trend_exhausted_bull = (p5_open > c_open)
     
-    if is_prev_red and is_curr_green and is_inside_bull and is_smaller_bull and trend_exhausted_bull and rsi <= 68.0:
+    if is_prev_red and is_curr_green and is_inside_bull and is_smaller_bull and trend_exhausted_bull: # and rsi <= 68.0:
         signal = "CALL"
         logger.info(f"🎯 5M HARAMI SMC SNIPER CALL on {pair} @ {c_close} | Bullish Inside Bar after 5m Downtrend Exhaustion (RSI:{rsi:.1f}, Vol:{vol_ratio:.2f}x)")
         
@@ -1334,7 +1336,7 @@ def check_5m_harami_smc_sniper(pair: str, candles_5m: list) -> dict:
     is_smaller_bear = (c_open - c_close) < (p_close - p_open)
     trend_exhausted_bear = (p5_open < c_open)
     
-    if not signal and is_prev_green and is_curr_red and is_inside_bear and is_smaller_bear and trend_exhausted_bear and rsi >= 32.0:
+    if not signal and is_prev_green and is_curr_red and is_inside_bear and is_smaller_bear and trend_exhausted_bear: # and rsi >= 32.0:
         signal = "PUT"
         logger.info(f"🎯 5M HARAMI SMC SNIPER PUT on {pair} @ {c_close} | Bearish Inside Bar after 5m Uptrend Exhaustion (RSI:{rsi:.1f}, Vol:{vol_ratio:.2f}x)")
         

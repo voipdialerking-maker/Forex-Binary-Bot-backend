@@ -59,7 +59,11 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
             return
 
         signal_data = None
-        current_minute = datetime.now(timezone.utc).minute
+        
+        # Calculate exactly when the finalized 1m candle closed
+        # completed_epoch is the START time of the 1m candle, so it closes 60 seconds later.
+        candle_close_time = datetime.fromtimestamp(completed_epoch + 60, timezone.utc)
+        candle_close_minute = candle_close_time.minute
 
         # Set up dynamic fetchers based on data source
         from tv_client import fetch_tv_candles_cached
@@ -70,8 +74,8 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
         # -------------------------------------------------------------
         # Evaluate 5-Minute Institutional Strategies every 5th minute (5m Chart -> Next 5m Candle Expiry)
         # -------------------------------------------------------------
-        if current_minute % 5 == 0:
-            logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached. Checking 5m Institutional Harami & OB Retest...")
+        if candle_close_minute % 5 == 0:
+            logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached (Close Time: {candle_close_time.strftime('%H:%M:%S UTC')}). Checking 5m Institutional Harami & OB Retest...")
             candles_5m = await fetch_5m(pair)
             if candles_5m and len(candles_5m) > 40:
                 signal_data = check_5m_harami_smc_sniper(pair, candles_5m)
@@ -96,7 +100,7 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
             candles_m15_sniper = await fetch_m15(pair, count=50)
             signal_data = check_mtf_smc_sniper_strategy(candles_1h_sniper, candles_m15_sniper, candle_history)
 
-        if signal_data:
+        if signal_data and "Harami" not in signal_data.get("strategy_name", ""):
             # --- INSTITUTIONAL MASTER DOLLAR COMPASS SHIELD ---
             eurusd_1h_shield = await fetch_1h("EUR/USD", count=50)
             eurusd_15m_shield = await fetch_m15("EUR/USD", count=50)
