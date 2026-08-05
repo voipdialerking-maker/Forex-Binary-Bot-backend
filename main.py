@@ -13,7 +13,7 @@ import config
 import database
 import notifier
 from indicators import calculate_all_indicators
-from strategy import check_5m_harami_smc_sniper, check_5m_smc_golden_fibo_sniper
+from strategy import check_5m_harami_smc_sniper, check_5m_smc_golden_fibo_sniper, check_1m_sr_break_retest_sniper
 from data_feed import TVDataFeed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -81,6 +81,12 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
                 # If Harami didn't fire, check the new Fibo strategy
                 if not signal_data:
                     signal_data = check_5m_smc_golden_fibo_sniper(pair, candles_5m)
+
+        # -------------------------------------------------------------
+        # Evaluate 1-Minute S/R Break & Retest Sniper (EVERY minute -> 5m Expiry)
+        # -------------------------------------------------------------
+        if not signal_data:
+            signal_data = check_1m_sr_break_retest_sniper(pair, candle_history)
 
         if signal_data:
             direction = signal_data["signal"]

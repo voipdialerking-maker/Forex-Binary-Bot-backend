@@ -1496,3 +1496,123 @@ def check_5m_smc_golden_fibo_sniper(pair: str, candles_5m: list) -> dict:
         }
         
     return None
+
+
+def check_1m_sr_break_retest_sniper(pair: str, candles_1m: list) -> dict:
+    """
+    Evaluates 1m S/R Break & Retest Sniper (1m Chart -> 5m Expiry).
+    Based on 'Breaks and Retests with Volatility Stop [HG]' PineScript.
+    Detects 20-bar Pivot High/Low to draw S/R boxes, detects breakout, and triggers on first Retest.
+    """
+    if not candles_1m or len(candles_1m) < 100:
+        return None
+        
+    import pandas as pd
+    df = pd.DataFrame(candles_1m)
+    for col in ['open', 'high', 'low', 'close', 'epoch']:
+        df[col] = pd.to_numeric(df.get(col, 0.0))
+        
+    bb = 20
+    
+    # State tracking
+    sBreak = False
+    sBreak_idx = -1
+    sTop = None
+    sBot = None
+    
+    rBreak = False
+    rBreak_idx = -1
+    rTop = None
+    rBot = None
+    
+    # We iterate from the first possible pivot confirmation to build the historical state
+    last_idx = len(df) - 2 # the just-closed candle
+    
+    for i in range(2 * bb, last_idx + 1):
+        # 1. Pivot Detection at index i - bb
+        idx_pivot = i - bb
+        c_low = df.iloc[idx_pivot]['low']
+        c_high = df.iloc[idx_pivot]['high']
+        
+        is_pl = True
+        is_ph = True
+        
+        for j in range(1, bb + 1):
+            # Left side
+            if df.iloc[idx_pivot - j]['low'] <= c_low: is_pl = False
+            if df.iloc[idx_pivot - j]['high'] >= c_high: is_ph = False
+            # Right side
+            if df.iloc[idx_pivot + j]['low'] <= c_low: is_pl = False
+            if df.iloc[idx_pivot + j]['high'] >= c_high: is_ph = False
+            
+        if is_pl:
+            sBot = c_low
+            l1 = df.iloc[idx_pivot - 1]['low']
+            l2 = df.iloc[idx_pivot + 1]['low']
+            sTop = min(l1, l2)
+            sBreak = False
+            
+        if is_ph:
+            rTop = c_high
+            h1 = df.iloc[idx_pivot - 1]['high']
+            h2 = df.iloc[idx_pivot + 1]['high']
+            rBot = max(h1, h2)
+            rBreak = False
+            
+        # 2. Breakout Detection on the current simulated candle (i)
+        c_close = df.iloc[i]['close']
+        p_close = df.iloc[i - 1]['close']
+        
+        if sBot is not None and not sBreak:
+            if p_close >= sBot and c_close < sBot:
+                sBreak = True
+                sBreak_idx = i
+                
+        if rTop is not None and not rBreak:
+            if p_close <= rTop and c_close > rTop:
+                rBreak = True
+                rBreak_idx = i
+                
+    # Now evaluate Retest on the just-closed candle
+    c = df.iloc[last_idx]
+    c_high, c_low, c_close, c_open = c['high'], c['low'], c['close'], c['open']
+    c_epoch = int(c['epoch'])
+    
+    signal = None
+    
+    # Support Retest (PUT) - Price broke support, now goes up to retest it as resistance
+    if sBreak and sBot is not None and sTop is not None and (last_idx - sBreak_idx) > 2:
+        s1 = c_high >= sTop and c_close <= sBot
+        s2 = c_high >= sTop and c_close >= sBot and c_close <= sTop
+        s3 = c_high >= sBot and c_high <= sTop
+        s4 = c_high >= sBot and c_high <= sTop and c_close < sBot
+        
+        if s1 or s2 or s3 or s4:
+            signal = "PUT"
+            logger.info(f"⚡ 1M S/R BREAK & RETEST PUT on {pair} @ {c_close} | Support Broken, Now Retesting as Resistance")
+            
+    # Resistance Retest (CALL) - Price broke resistance, now falls to retest it as support
+    if not signal and rBreak and rBot is not None and rTop is not None and (last_idx - rBreak_idx) > 2:
+        r1 = c_low <= rBot and c_close >= rTop
+        r2 = c_low <= rBot and c_close <= rTop and c_close >= rBot
+        r3 = c_low <= rTop and c_low >= rBot
+        r4 = c_low <= rTop and c_low >= rBot and c_close > rTop
+        
+        if r1 or r2 or r3 or r4:
+            signal = "CALL"
+            logger.info(f"⚡ 1M S/R BREAK & RETEST CALL on {pair} @ {c_close} | Resistance Broken, Now Retesting as Support")
+            
+    if signal:
+        return {
+            "pair": None,
+            "signal": signal,
+            "entry_price": float(c_close),
+            "rsi": 50.0,
+            "stochastic": 50.0,
+            "volume_ratio": 1.0,
+            "volume": float(c.get('volume', 1.0)),
+            "epoch": c_epoch,
+            "strategy_name": "1m S/R Break & Retest Sniper (5m Expiry)"
+        }
+        
+    return None
