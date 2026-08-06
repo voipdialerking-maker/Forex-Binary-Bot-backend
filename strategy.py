@@ -1287,6 +1287,9 @@ def check_1m_master_pullback_sniper(pair: str, candles_1m: list, candles_15m: li
     vol_ma = df['volume'].rolling(window=20).mean()
     df['volume_ratio'] = df['volume'] / vol_ma.replace(0, 1.0)
     
+    # Refresh c to include the new columns
+    c = df.iloc[current_idx]
+    
     trend_up = float(c['ema_50']) > float(c['ema_200'])
     trend_down = float(c['ema_50']) < float(c['ema_200'])
     
