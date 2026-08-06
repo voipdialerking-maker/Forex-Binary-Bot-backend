@@ -1288,6 +1288,10 @@ def check_5m_harami_smc_sniper(pair: str, candles_5m: list) -> dict:
     vol_ma = df['volume'].rolling(window=20).mean()
     df['volume_ratio'] = df['volume'] / vol_ma.replace(0, 1.0)
     
+    # Calculate EMA Trend Filter
+    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+    df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
+    
     idx = len(df) - 2
     if idx < 10:
         return None
@@ -1314,6 +1318,11 @@ def check_5m_harami_smc_sniper(pair: str, candles_5m: list) -> dict:
     vol_ratio = float(c.get('volume_ratio', 1.0))
     volume = float(c.get('volume', 1.0))
     
+    ema_50 = float(c.get('ema_50', 0.0))
+    ema_200 = float(c.get('ema_200', 0.0))
+    trend_up = ema_50 > ema_200
+    trend_down = ema_50 < ema_200
+    
     signal = None
     
     # 1. Bullish Harami (CALL):
@@ -1324,9 +1333,9 @@ def check_5m_harami_smc_sniper(pair: str, candles_5m: list) -> dict:
     is_smaller_bull = (c_close - c_open) < (p_open - p_close)
     trend_exhausted_bull = (p5_open > c_open)
     
-    if is_prev_red and is_curr_green and is_inside_bull and is_smaller_bull and trend_exhausted_bull: # and rsi <= 68.0:
+    if is_prev_red and is_curr_green and is_inside_bull and is_smaller_bull and trend_exhausted_bull and trend_up: # and rsi <= 68.0:
         signal = "CALL"
-        logger.info(f"🎯 5M HARAMI SMC SNIPER CALL on {pair} @ {c_close} | Bullish Inside Bar after 5m Downtrend Exhaustion (RSI:{rsi:.1f}, Vol:{vol_ratio:.2f}x)")
+        logger.info(f"🎯 5M HARAMI SMC SNIPER CALL on {pair} @ {c_close} | Bullish Inside Bar after 5m Downtrend Exhaustion (EMA Trend Up)")
         
     # 2. Bearish Harami (PUT):
     # (close[1] > open[1] and open > close and open <= close[1] and open[1] <= close and open - close < close[1] - open[1] and open[5] < open)
@@ -1336,9 +1345,9 @@ def check_5m_harami_smc_sniper(pair: str, candles_5m: list) -> dict:
     is_smaller_bear = (c_open - c_close) < (p_close - p_open)
     trend_exhausted_bear = (p5_open < c_open)
     
-    if not signal and is_prev_green and is_curr_red and is_inside_bear and is_smaller_bear and trend_exhausted_bear: # and rsi >= 32.0:
+    if not signal and is_prev_green and is_curr_red and is_inside_bear and is_smaller_bear and trend_exhausted_bear and trend_down: # and rsi >= 32.0:
         signal = "PUT"
-        logger.info(f"🎯 5M HARAMI SMC SNIPER PUT on {pair} @ {c_close} | Bearish Inside Bar after 5m Uptrend Exhaustion (RSI:{rsi:.1f}, Vol:{vol_ratio:.2f}x)")
+        logger.info(f"🎯 5M HARAMI SMC SNIPER PUT on {pair} @ {c_close} | Bearish Inside Bar after 5m Uptrend Exhaustion (EMA Trend Down)")
         
     if signal:
         return {
