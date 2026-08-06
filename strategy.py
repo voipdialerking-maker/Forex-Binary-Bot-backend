@@ -1492,3 +1492,246 @@ def check_5m_ema_bos_retest_strategy(pair: str, candles_5m: list) -> dict:
         }
         
     return None
+
+
+def check_1m_master_pullback_sniper(pair: str, candles_1m: list) -> dict:
+    """
+    1-Minute Master Pullback Strategy
+    Monitors 3 structural zones during a trend pullback:
+    1. First HH (Support/Resistance flip)
+    2. Order Block (Last opposite candle before breakout)
+    3. Golden Fibo (0.5 - 0.618 of the entire impulse leg)
+    """
+    if not candles_1m or len(candles_1m) < 150:
+        return None
+        
+    import pandas as pd
+    df = pd.DataFrame(candles_1m)
+    for col in ['open', 'high', 'low', 'close', 'volume', 'epoch']:
+        df[col] = pd.to_numeric(df.get(col, 1.0))
+        
+    # Trend Filter
+    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+    df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
+    
+    current_idx = len(df) - 2
+    if current_idx < 10:
+        return None
+        
+    c = df.iloc[current_idx]
+    
+    trend_up = float(c['ema_50']) > float(c['ema_200'])
+    trend_down = float(c['ema_50']) < float(c['ema_200'])
+    
+    if not trend_up and not trend_down:
+        return None
+        
+    # Identify Pivots (Left 4, Right 4)
+    left_bars = 4
+    right_bars = 4
+    all_pivots = []
+    
+    for i in range(left_bars, len(df) - right_bars - 1):
+        c_high = float(df['high'].iloc[i])
+        c_low = float(df['low'].iloc[i])
+        
+        is_ph = True
+        is_pl = True
+        
+        for j in range(1, left_bars + 1):
+            if float(df['high'].iloc[i-j]) >= c_high: is_ph = False
+            if float(df['low'].iloc[i-j]) <= c_low: is_pl = False
+            
+        for j in range(1, right_bars + 1):
+            if float(df['high'].iloc[i+j]) >= c_high: is_ph = False
+            if float(df['low'].iloc[i+j]) <= c_low: is_pl = False
+            
+        if is_ph: all_pivots.append({'type': 'PH', 'idx': i, 'val': c_high})
+        if is_pl: all_pivots.append({'type': 'PL', 'idx': i, 'val': c_low})
+        
+    if len(all_pivots) < 3:
+        return None
+        
+    all_pivots.sort(key=lambda x: x['idx'])
+    
+    signal = None
+    zone_hit = ""
+    
+    if trend_up:
+        # Find Rally End (Last PH), Rally Start (PL before Last PH), and Prev PH (BOS check)
+        last_ph = None
+        last_pl = None
+        prev_ph = None
+        
+        for p in reversed(all_pivots):
+            if p['type'] == 'PH':
+                if not last_ph: last_ph = p
+                elif not prev_ph: prev_ph = p
+            elif p['type'] == 'PL':
+                if last_ph and not last_pl: last_pl = p
+                
+        if not (last_ph and last_pl and prev_ph): return None
+        if last_pl['idx'] > last_ph['idx']:
+            # Find the actual PL before last_ph
+            pl_candidates = [p for p in all_pivots if p['type'] == 'PL' and p['idx'] < last_ph['idx']]
+            if pl_candidates: last_pl = pl_candidates[-1]
+            else: return None
+            
+        idx_end = last_ph['idx']
+        idx_start = last_pl['idx']
+        
+        rally_end_val = last_ph['val']
+        rally_start_val = last_pl['val']
+        
+        # BOS Check
+        if rally_end_val <= prev_ph['val']: return None
+        
+        # Zone Mapping
+        diff = rally_end_val - rally_start_val
+        fibo_0_5 = rally_end_val - (diff * 0.5)
+        fibo_0_618 = rally_end_val - (diff * 0.618)
+        
+        first_hh_val = None
+        ob_high = None
+        ob_low = None
+        
+        # Scan for First HH & OB
+        for i in range(idx_start + 1, idx_end - 1):
+            if df['high'].iloc[i] > df['high'].iloc[i-1] and df['high'].iloc[i] > df['high'].iloc[i+1]:
+                first_hh_val = df['high'].iloc[i]
+                
+                pullback_low_val = 999999
+                pullback_low_idx = i
+                for j in range(i + 1, idx_end):
+                    if df['high'].iloc[j] > first_hh_val: break
+                    if df['low'].iloc[j] < pullback_low_val:
+                        pullback_low_val = df['low'].iloc[j]
+                        pullback_low_idx = j
+                        
+                for k in range(pullback_low_idx, i, -1):
+                    if df['close'].iloc[k] < df['open'].iloc[k]: # RED candle
+                        ob_high = df['high'].iloc[k]
+                        ob_low = df['low'].iloc[k]
+                        break
+                break
+                
+        # Walk Forward & Invalidation
+        fibo_used = False
+        ob_used = False
+        hh_used = False
+        
+        for i in range(idx_end + 1, current_idx):
+            l = df['low'].iloc[i]
+            if l < rally_start_val: return None # CHoCH / Trend change, wait for new BOS
+            if first_hh_val and l <= first_hh_val: hh_used = True
+            if ob_high and l <= ob_high: ob_used = True
+            if l <= fibo_0_5: fibo_used = True
+            
+        # Current Candle Touch Check (First Touch)
+        c_low = c['low']
+        c_close = c['close']
+        
+        if first_hh_val and not hh_used and c_low <= first_hh_val * 1.0001:
+            signal = "CALL"
+            zone_hit = "First HH Resistance-turned-Support"
+        elif ob_high and not ob_used and c_low <= ob_high * 1.0001:
+            signal = "CALL"
+            zone_hit = "Order Block (Last Red Candle)"
+        elif not fibo_used and c_low <= fibo_0_5 * 1.0001 and c_close >= fibo_0_618 * 0.9995:
+            signal = "CALL"
+            zone_hit = "Golden Fibo (0.5 - 0.618)"
+            
+    elif trend_down:
+        last_pl = None
+        last_ph = None
+        prev_pl = None
+        
+        for p in reversed(all_pivots):
+            if p['type'] == 'PL':
+                if not last_pl: last_pl = p
+                elif not prev_pl: prev_pl = p
+            elif p['type'] == 'PH':
+                if last_pl and not last_ph: last_ph = p
+                
+        if not (last_pl and last_ph and prev_pl): return None
+        if last_ph['idx'] > last_pl['idx']:
+            ph_candidates = [p for p in all_pivots if p['type'] == 'PH' and p['idx'] < last_pl['idx']]
+            if ph_candidates: last_ph = ph_candidates[-1]
+            else: return None
+            
+        idx_end = last_pl['idx']
+        idx_start = last_ph['idx']
+        
+        rally_end_val = last_pl['val']
+        rally_start_val = last_ph['val']
+        
+        # BOS Check
+        if rally_end_val >= prev_pl['val']: return None
+        
+        diff = rally_start_val - rally_end_val
+        fibo_0_5 = rally_end_val + (diff * 0.5)
+        fibo_0_618 = rally_end_val + (diff * 0.618)
+        
+        first_ll_val = None
+        ob_high = None
+        ob_low = None
+        
+        for i in range(idx_start + 1, idx_end - 1):
+            if df['low'].iloc[i] < df['low'].iloc[i-1] and df['low'].iloc[i] < df['low'].iloc[i+1]:
+                first_ll_val = df['low'].iloc[i]
+                
+                pullback_high_val = -1
+                pullback_high_idx = i
+                for j in range(i + 1, idx_end):
+                    if df['low'].iloc[j] < first_ll_val: break
+                    if df['high'].iloc[j] > pullback_high_val:
+                        pullback_high_val = df['high'].iloc[j]
+                        pullback_high_idx = j
+                        
+                for k in range(pullback_high_idx, i, -1):
+                    if df['close'].iloc[k] > df['open'].iloc[k]: # GREEN candle
+                        ob_high = df['high'].iloc[k]
+                        ob_low = df['low'].iloc[k]
+                        break
+                break
+                
+        fibo_used = False
+        ob_used = False
+        ll_used = False
+        
+        for i in range(idx_end + 1, current_idx):
+            h = df['high'].iloc[i]
+            if h > rally_start_val: return None
+            if first_ll_val and h >= first_ll_val: ll_used = True
+            if ob_low and h >= ob_low: ob_used = True
+            if h >= fibo_0_5: fibo_used = True
+            
+        c_high = c['high']
+        c_close = c['close']
+        
+        if first_ll_val and not ll_used and c_high >= first_ll_val * 0.9999:
+            signal = "PUT"
+            zone_hit = "First LL Support-turned-Resistance"
+        elif ob_low and not ob_used and c_high >= ob_low * 0.9999:
+            signal = "PUT"
+            zone_hit = "Order Block (Last Green Candle)"
+        elif not fibo_used and c_high >= fibo_0_5 * 0.9999 and c_close <= fibo_0_618 * 1.0005:
+            signal = "PUT"
+            zone_hit = "Golden Fibo (0.5 - 0.618)"
+            
+    if signal:
+        logger.info(f"⚡ 1M MASTER PULLBACK SNIPER {signal} on {pair} @ {c['close']} | Zone Hit: {zone_hit}")
+        return {
+            "pair": pair,
+            "signal": signal,
+            "entry_price": float(c['close']),
+            "rsi": 50.0,
+            "stochastic": 50.0,
+            "volume_ratio": 1.0,
+            "volume": float(c['volume']),
+            "epoch": int(c['epoch']),
+            "strategy_name": f"1m Master Pullback Sniper ({zone_hit})"
+        }
+        
+    return None
+

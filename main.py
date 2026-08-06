@@ -13,7 +13,7 @@ import config
 import database
 import notifier
 from indicators import calculate_all_indicators
-from strategy import check_5m_harami_smc_sniper, check_5m_ema_bos_retest_strategy
+from strategy import check_5m_harami_smc_sniper, check_5m_ema_bos_retest_strategy, check_1m_master_pullback_sniper
 from data_feed import TVDataFeed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -79,6 +79,17 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
                 signal_data = check_5m_harami_smc_sniper(pair, candles_5m)
                 if not signal_data:
                     signal_data = check_5m_ema_bos_retest_strategy(pair, candles_5m)
+
+        # -------------------------------------------------------------
+        # Evaluate 1-Minute Strategy (1m Chart -> Next 5m Candle Expiry)
+        # -------------------------------------------------------------
+        logger.info(f"[{format_pair_display(pair)}] Checking 1m Master Pullback Strategy...")
+        fetch_1m = lambda p, count=250: fetch_tv_candles_cached(p, "1m", count)
+        candles_1m = await fetch_1m(pair)
+        
+        if candles_1m and len(candles_1m) > 150:
+            if not signal_data:
+                signal_data = check_1m_master_pullback_sniper(pair, candles_1m)
 
         if signal_data:
             direction = signal_data["signal"]
