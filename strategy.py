@@ -1593,7 +1593,17 @@ def check_5m_ema_bos_retest_strategy(pair: str, candles_5m: list) -> dict:
             
             # If we reached here, BOS is verified or it's the first pullback
             is_bullish_close = c_close > c_open
-            if is_bullish_close:
+            
+            # Ensure this is the FIRST bullish close in the current touch cluster
+            is_first_bullish = True
+            j = idx - 1
+            while j >= 0 and float(df['low'].iloc[j]) <= float(df['ema_50'].iloc[j]):
+                if float(df['close'].iloc[j]) > float(df['open'].iloc[j]):
+                    is_first_bullish = False
+                    break
+                j -= 1
+                
+            if is_bullish_close and is_first_bullish:
                 signal = "CALL"
                 logger.info(f"📈 50/200 EMA BOS RETEST CALL on {pair} @ {c_close} | BOS Confirmed Pullback")
                 
@@ -1631,7 +1641,17 @@ def check_5m_ema_bos_retest_strategy(pair: str, candles_5m: list) -> dict:
                             return None
                             
             is_bearish_close = c_close < c_open
-            if is_bearish_close:
+            
+            # Ensure this is the FIRST bearish close in the current touch cluster
+            is_first_bearish = True
+            j = idx - 1
+            while j >= 0 and float(df['high'].iloc[j]) >= float(df['ema_50'].iloc[j]):
+                if float(df['close'].iloc[j]) < float(df['open'].iloc[j]):
+                    is_first_bearish = False
+                    break
+                j -= 1
+                
+            if is_bearish_close and is_first_bearish:
                 signal = "PUT"
                 logger.info(f"📉 50/200 EMA BOS RETEST PUT on {pair} @ {c_close} | BOS Confirmed Pullback")
                 
