@@ -1253,30 +1253,280 @@ def check_smt_divergence_sniper(pair: str, candles_1m: list, eurusd_1m: list) ->
         
     return None
 
-def check_5m_harami_smc_sniper(pair: str, candles_5m: list) -> dict:
+def check_1m_master_pullback_sniper(pair: str, candles_1m: list, candles_15m: list = None) -> dict:
     """
-    Evaluates 5-Minute Institutional Harami SMC Reversal Strategy (5m Chart -> Next 5m Candle Expiry).
-    Based on Harami Candlestick Reversal with 5-bar Trend Exhaustion (open[5] filter),
-    enhanced with Institutional Volume Multiplier (>= 1.20x) and RSI safety filters.
-    
-    Setup Rules:
-    1. Bullish Harami (CALL):
-       - Prev 5m bar is red (close[1] < open[1]).
-       - Current 5m bar is green (close > open).
-       - Current bar body inside previous bar body: close <= open[1] and open >= close[1].
-       - Current bar body smaller than previous bar body: (close - open) < (open[1] - close[1]).
-       - 5-Bar Trend Filter: open[5] > open (downtrend exhaustion).
-       - Institutional filter: volume_ratio >= 1.20 and RSI <= 68.
-    2. Bearish Harami (PUT):
-       - Prev 5m bar is green (close[1] > open[1]).
-       - Current 5m bar is red (close < open).
-       - Current bar body inside previous bar body: open <= close[1] and close >= open[1].
-       - Current bar body smaller than previous bar body: (open - close) < (close[1] - open[1]).
-       - 5-Bar Trend Filter: open[5] < open (uptrend exhaustion).
-       - Institutional filter: volume_ratio >= 1.20 and RSI >= 32.
+    Unbeatable 1-Minute Master Pullback Strategy (Evaluated on 5m boundaries)
+    Monitors 3 structural zones with 4 Institutional Filters:
+    1. 15m MTF Alignment
+    2. Volume Breakout Anomaly
+    3. Momentum Crash Check
+    4. London/NY Session Filter
     """
-    if not candles_5m or len(candles_5m) < 25:
+    if not candles_1m or len(candles_1m) < 150:
         return None
+        
+    import pandas as pd
+    from datetime import datetime, timezone
+    
+    df = pd.DataFrame(candles_1m)
+    for col in ['open', 'high', 'low', 'close', 'volume', 'epoch']:
+        df[col] = pd.to_numeric(df.get(col, 1.0))
+        
+    # --- FILTER D: Session Time ---
+    current_idx = len(df) - 2
+    if current_idx < 10:
+        return None
+    c = df.iloc[current_idx]
+    current_time = datetime.fromtimestamp(int(c['epoch']), timezone.utc)
+    if current_time.hour < 7 or current_time.hour >= 21:
+        return None # Only trade London/NY sessions
+        
+    # Calculate 1m EMAs and Volume MA
+    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+    df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
+    vol_ma = df['volume'].rolling(window=20).mean()
+    df['volume_ratio'] = df['volume'] / vol_ma.replace(0, 1.0)
+    
+    trend_up = float(c['ema_50']) > float(c['ema_200'])
+    trend_down = float(c['ema_50']) < float(c['ema_200'])
+    
+    # --- FILTER A: 15m MTF Alignment ---
+    if candles_15m and len(candles_15m) > 150:
+        df_15 = pd.DataFrame(candles_15m)
+        df_15['close'] = pd.to_numeric(df_15['close'])
+        df_15['ema_50'] = df_15['close'].ewm(span=50, adjust=False).mean()
+        df_15['ema_200'] = df_15['close'].ewm(span=200, adjust=False).mean()
+        c15 = df_15.iloc[-2]
+        mtf_up = float(c15['ema_50']) > float(c15['ema_200'])
+        mtf_down = float(c15['ema_50']) < float(c15['ema_200'])
+        
+        if trend_up and not mtf_up:
+            return None # Fake 1m uptrend
+        if trend_down and not mtf_down:
+            return None # Fake 1m downtrend
+            
+    if not trend_up and not trend_down:
+        return None
+        
+    # Identify Pivots (Left 4, Right 4)
+    left_bars = 4
+    right_bars = 4
+    all_pivots = []
+    
+    for i in range(left_bars, len(df) - right_bars - 1):
+        c_high = float(df['high'].iloc[i])
+        c_low = float(df['low'].iloc[i])
+        is_ph = True
+        is_pl = True
+        for j in range(1, left_bars + 1):
+            if float(df['high'].iloc[i-j]) >= c_high: is_ph = False
+            if float(df['low'].iloc[i-j]) <= c_low: is_pl = False
+        for j in range(1, right_bars + 1):
+            if float(df['high'].iloc[i+j]) >= c_high: is_ph = False
+            if float(df['low'].iloc[i+j]) <= c_low: is_pl = False
+        if is_ph: all_pivots.append({'type': 'PH', 'idx': i, 'val': c_high})
+        if is_pl: all_pivots.append({'type': 'PL', 'idx': i, 'val': c_low})
+        
+    if len(all_pivots) < 3: return None
+    all_pivots.sort(key=lambda x: x['idx'])
+    
+    signal = None
+    zone_hit = ""
+    
+    trigger_start_idx = max(0, current_idx - 4)
+    used_check_end_idx = trigger_start_idx - 1
+    
+    if trend_up:
+        last_ph = None
+        last_pl = None
+        prev_ph = None
+        
+        valid_pivots = [p for p in all_pivots if p['idx'] <= used_check_end_idx]
+        
+        for p in reversed(valid_pivots):
+            if p['type'] == 'PH':
+                if not last_ph: last_ph = p
+                elif not prev_ph: prev_ph = p
+            elif p['type'] == 'PL':
+                if last_ph and not last_pl: last_pl = p
+                
+        if not (last_ph and last_pl and prev_ph): return None
+        if last_pl['idx'] > last_ph['idx']:
+            pl_candidates = [p for p in valid_pivots if p['type'] == 'PL' and p['idx'] < last_ph['idx']]
+            if pl_candidates: last_pl = pl_candidates[-1]
+            else: return None
+            
+        idx_end = last_ph['idx']
+        idx_start = last_pl['idx']
+        rally_end_val = last_ph['val']
+        rally_start_val = last_pl['val']
+        
+        if rally_end_val <= prev_ph['val']: return None # No BOS
+        
+        # --- FILTER B: Volume Anomaly ---
+        # The breakout peak candle must have decent volume > 1.1x avg
+        if df['volume_ratio'].iloc[idx_end] < 1.1:
+            return None # Weak breakout, trap likely
+            
+        # --- FILTER C: Pullback Momentum ---
+        # Did it crash from rally top in less than 3 candles?
+        if current_idx - idx_end < 3:
+            return None # Too fast, catching a falling knife
+        
+        diff = rally_end_val - rally_start_val
+        fibo_0_5 = rally_end_val - (diff * 0.5)
+        fibo_0_618 = rally_end_val - (diff * 0.618)
+        
+        first_hh_val = None
+        ob_high = None
+        ob_low = None
+        
+        for i in range(idx_start + 1, idx_end - 1):
+            if df['high'].iloc[i] > df['high'].iloc[i-1] and df['high'].iloc[i] > df['high'].iloc[i+1]:
+                first_hh_val = df['high'].iloc[i]
+                pullback_low_val = 999999
+                pullback_low_idx = i
+                for j in range(i + 1, idx_end):
+                    if df['high'].iloc[j] > first_hh_val: break
+                    if df['low'].iloc[j] < pullback_low_val:
+                        pullback_low_val = df['low'].iloc[j]
+                        pullback_low_idx = j
+                for k in range(pullback_low_idx, i, -1):
+                    if df['close'].iloc[k] < df['open'].iloc[k]:
+                        ob_high = df['high'].iloc[k]
+                        ob_low = df['low'].iloc[k]
+                        break
+                break
+                
+        fibo_used = False
+        ob_used = False
+        hh_used = False
+        
+        for i in range(idx_end + 1, used_check_end_idx + 1):
+            l = df['low'].iloc[i]
+            if l < rally_start_val: return None # CHoCH before window, wait for new BOS
+            if first_hh_val and l <= first_hh_val: hh_used = True
+            if ob_high and l <= ob_high: ob_used = True
+            if l <= fibo_0_5: fibo_used = True
+            
+        for i in range(trigger_start_idx, current_idx + 1):
+            l = df['low'].iloc[i]
+            if l < rally_start_val: return None # CHoCH happened during window
+            
+            if not signal:
+                if first_hh_val and not hh_used and l <= first_hh_val * 1.0001:
+                    signal = "CALL"
+                    zone_hit = "First HH Resistance-turned-Support"
+                elif ob_high and not ob_used and l <= ob_high * 1.0001:
+                    signal = "CALL"
+                    zone_hit = "Order Block (Last Red Candle)"
+                elif not fibo_used and l <= fibo_0_5 * 1.0001 and df['close'].iloc[i] >= fibo_0_618 * 0.9995:
+                    signal = "CALL"
+                    zone_hit = "Golden Fibo (0.5 - 0.618)"
+            
+    elif trend_down:
+        last_pl = None
+        last_ph = None
+        prev_pl = None
+        
+        valid_pivots = [p for p in all_pivots if p['idx'] <= used_check_end_idx]
+        
+        for p in reversed(valid_pivots):
+            if p['type'] == 'PL':
+                if not last_pl: last_pl = p
+                elif not prev_pl: prev_pl = p
+            elif p['type'] == 'PH':
+                if last_pl and not last_ph: last_ph = p
+                
+        if not (last_pl and last_ph and prev_pl): return None
+        if last_ph['idx'] > last_pl['idx']:
+            ph_candidates = [p for p in valid_pivots if p['type'] == 'PH' and p['idx'] < last_pl['idx']]
+            if ph_candidates: last_ph = ph_candidates[-1]
+            else: return None
+            
+        idx_end = last_pl['idx']
+        idx_start = last_ph['idx']
+        rally_end_val = last_pl['val']
+        rally_start_val = last_ph['val']
+        
+        if rally_end_val >= prev_pl['val']: return None
+        
+        # --- FILTER B: Volume Anomaly ---
+        if df['volume_ratio'].iloc[idx_end] < 1.1:
+            return None # Weak breakout, trap likely
+            
+        # --- FILTER C: Pullback Momentum ---
+        if current_idx - idx_end < 3:
+            return None # Too fast, catching a falling knife
+        
+        diff = rally_start_val - rally_end_val
+        fibo_0_5 = rally_end_val + (diff * 0.5)
+        fibo_0_618 = rally_end_val + (diff * 0.618)
+        
+        first_ll_val = None
+        ob_high = None
+        ob_low = None
+        
+        for i in range(idx_start + 1, idx_end - 1):
+            if df['low'].iloc[i] < df['low'].iloc[i-1] and df['low'].iloc[i] < df['low'].iloc[i+1]:
+                first_ll_val = df['low'].iloc[i]
+                pullback_high_val = -1
+                pullback_high_idx = i
+                for j in range(i + 1, idx_end):
+                    if df['low'].iloc[j] < first_ll_val: break
+                    if df['high'].iloc[j] > pullback_high_val:
+                        pullback_high_val = df['high'].iloc[j]
+                        pullback_high_idx = j
+                for k in range(pullback_high_idx, i, -1):
+                    if df['close'].iloc[k] > df['open'].iloc[k]:
+                        ob_high = df['high'].iloc[k]
+                        ob_low = df['low'].iloc[k]
+                        break
+                break
+                
+        fibo_used = False
+        ob_used = False
+        ll_used = False
+        
+        for i in range(idx_end + 1, used_check_end_idx + 1):
+            h = df['high'].iloc[i]
+            if h > rally_start_val: return None
+            if first_ll_val and h >= first_ll_val: ll_used = True
+            if ob_low and h >= ob_low: ob_used = True
+            if h >= fibo_0_5: fibo_used = True
+            
+        for i in range(trigger_start_idx, current_idx + 1):
+            h = df['high'].iloc[i]
+            if h > rally_start_val: return None
+            
+            if not signal:
+                if first_ll_val and not ll_used and h >= first_ll_val * 0.9999:
+                    signal = "PUT"
+                    zone_hit = "First LL Support-turned-Resistance"
+                elif ob_low and not ob_used and h >= ob_low * 0.9999:
+                    signal = "PUT"
+                    zone_hit = "Order Block (Last Green Candle)"
+                elif not fibo_used and h >= fibo_0_5 * 0.9999 and df['close'].iloc[i] <= fibo_0_618 * 1.0005:
+                    signal = "PUT"
+                    zone_hit = "Golden Fibo (0.5 - 0.618)"
+            
+    if signal:
+        import logging
+        logger = logging.getLogger("Main")
+        logger.info(f"⚡ MEGA MASTER PULLBACK SNIPER {signal} on {pair} @ {c['close']} | Zone: {zone_hit}")
+        return {
+            "pair": pair,
+            "signal": signal,
+            "entry_price": float(c['close']),
+            "rsi": 50.0,
+            "stochastic": 50.0,
+            "volume_ratio": float(c.get('volume_ratio', 1.0)),
+            "volume": float(c['volume']),
+            "epoch": int(c['epoch']),
+            "strategy_name": f"1m Master Pullback Sniper ({zone_hit})"
+        }
+        
+    return None
         
     import pandas as pd
     df = pd.DataFrame(candles_5m)

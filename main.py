@@ -13,7 +13,7 @@ import config
 import database
 import notifier
 from indicators import calculate_all_indicators
-from strategy import check_5m_harami_smc_sniper, check_5m_ema_bos_retest_strategy, check_1m_master_pullback_sniper
+from strategy import check_1m_master_pullback_sniper
 from data_feed import TVDataFeed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -67,28 +67,21 @@ async def handle_candle_completed(pair: str, candle_history: list, source: str =
 
         # Set up dynamic fetchers based on data source
         from tv_client import fetch_tv_candles_cached
-        fetch_5m = lambda p, count=250: fetch_tv_candles_cached(p, "5m", count)
 
-        # -------------------------------------------------------------
-        # Evaluate 5-Minute Institutional Strategy (5m Chart -> Next 5m Candle Expiry)
-        # -------------------------------------------------------------
         if candle_close_minute % 5 == 0:
-            logger.info(f"[{format_pair_display(pair)}] 5-Minute boundary reached (Close Time: {candle_close_time.strftime('%H:%M:%S UTC')}). Checking 5m Strategies...")
-            candles_5m = await fetch_5m(pair)
-            if candles_5m and len(candles_5m) > 150: # Need 150 for EMA 200
-                signal_data = check_5m_harami_smc_sniper(pair, candles_5m)
-                if not signal_data:
-                    signal_data = check_5m_ema_bos_retest_strategy(pair, candles_5m)
             # -------------------------------------------------------------
             # Evaluate 1-Minute Strategy (1m Chart -> Next 5m Candle Expiry)
             # -------------------------------------------------------------
-            logger.info(f"[{format_pair_display(pair)}] Checking 1m Master Pullback Strategy...")
+            logger.info(f"[{format_pair_display(pair)}] 5m boundary ({candle_close_time.strftime('%H:%M:%S UTC')}). Evaluating Unbeatable Master Setup...")
+            
             fetch_1m = lambda p, count=250: fetch_tv_candles_cached(p, "1m", count)
+            fetch_15m = lambda p, count=250: fetch_tv_candles_cached(p, "15m", count)
+            
             candles_1m = await fetch_1m(pair)
+            candles_15m = await fetch_15m(pair)
             
             if candles_1m and len(candles_1m) > 150:
-                if not signal_data:
-                    signal_data = check_1m_master_pullback_sniper(pair, candles_1m)
+                signal_data = check_1m_master_pullback_sniper(pair, candles_1m, candles_15m)
         if signal_data:
             direction = signal_data["signal"]
             entry_price = signal_data["entry_price"]
