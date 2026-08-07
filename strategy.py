@@ -1408,9 +1408,9 @@ def check_1m_master_pullback_sniper(pair: str, candles_1m: list, candles_15m: li
         for i in range(idx_end + 1, used_check_end_idx + 1):
             l = df['low'].iloc[i]
             if l < rally_start_val: return None # CHoCH before window, wait for new BOS
-            if first_hh_val and l <= first_hh_val: hh_used = True
-            if ob_high and l <= ob_high: ob_used = True
-            if l <= fibo_0_5: fibo_used = True
+            if first_hh_val and l <= first_hh_val * 1.0001: hh_used = True
+            if ob_high and l <= ob_high * 1.0001: ob_used = True
+            if l <= fibo_0_5 * 1.0001: fibo_used = True
             
         for i in range(trigger_start_idx, current_idx + 1):
             l = df['low'].iloc[i]
@@ -1494,9 +1494,9 @@ def check_1m_master_pullback_sniper(pair: str, candles_1m: list, candles_15m: li
         for i in range(idx_end + 1, used_check_end_idx + 1):
             h = df['high'].iloc[i]
             if h > rally_start_val: return None
-            if first_ll_val and h >= first_ll_val: ll_used = True
-            if ob_low and h >= ob_low: ob_used = True
-            if h >= fibo_0_5: fibo_used = True
+            if first_ll_val and h >= first_ll_val * 0.9999: ll_used = True
+            if ob_low and h >= ob_low * 0.9999: ob_used = True
+            if h >= fibo_0_5 * 0.9999: fibo_used = True
             
         for i in range(trigger_start_idx, current_idx + 1):
             h = df['high'].iloc[i]
